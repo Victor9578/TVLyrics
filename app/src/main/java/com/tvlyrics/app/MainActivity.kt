@@ -21,11 +21,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+    private lateinit var isAuthorized: androidx.compose.runtime.MutableState<Boolean>
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         SpotifyAuth.init(this)
-        setContent { App() }
-        // 登录回调（网络请求放后台线程）
+        isAuthorized = mutableStateOf(SpotifyAuth.isAuthorized)
+        setContent { App(isAuthorized.value) }
         handleLoginRedirect(intent)
     }
 
@@ -34,9 +36,17 @@ class MainActivity : ComponentActivity() {
         handleLoginRedirect(intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        isAuthorized.value = SpotifyAuth.isAuthorized
+    }
+
     private fun handleLoginRedirect(intent: Intent?) {
         val data = intent?.data ?: return
-        if (data.scheme == "tvlyrics") Thread { SpotifyAuth.handleRedirect(data) }.start()
+        if (data.scheme == "tvlyrics") Thread {
+            val ok = SpotifyAuth.handleRedirect(data)
+            if (ok) isAuthorized.value = true
+        }.start()
     }
 }
 
@@ -46,8 +56,8 @@ private val DIM = Color(0xFF6E6E78)
 private val WHITE = Color(0xFFEDEDF2)
 
 @Composable
-private fun App() {
-    if (!SpotifyAuth.isAuthorized) LoginScreen() else LyricsScreen()
+private fun App(authorized: Boolean = SpotifyAuth.isAuthorized) {
+    if (!authorized) LoginScreen() else LyricsScreen()
 }
 
 // ---------- 登录 ----------

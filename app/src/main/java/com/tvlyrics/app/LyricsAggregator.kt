@@ -1,6 +1,8 @@
 package com.tvlyrics.app
 
 // 歌词聚合：QQ 优先（逐字 QRC + 翻译），失败降级网易云（YRC + 翻译），最后 LRC
+import android.util.Log
+
 object LyricsAggregator {
     fun fetch(track: Track): Lyrics? {
         val keyword = buildString {
@@ -11,20 +13,24 @@ object LyricsAggregator {
         // 1. QQ 音乐
         try {
             val results = QQMusicApi.search(keyword)
+            Log.d("TVLyrics", "QQ search results: ${results.size} for '$keyword'")
             val best = results.firstOrNull { match(it, track) } ?: results.firstOrNull()
             if (best != null) {
                 val (raw, trans) = QQMusicApi.getLyrics(best.id)
+                Log.d("TVLyrics", "QQ lyrics len=${raw.length}")
                 val lines = parseQQ(raw, trans)
                 if (lines.isNotEmpty()) return Lyrics(lines, "QQ 音乐")
             }
-        } catch (_: Exception) { /* 降级 */ }
+        } catch (e: Exception) { Log.e("TVLyrics", "QQ fail", e) }
 
         // 2. 网易云
         try {
             val results = NeteaseApi.search(keyword)
+            Log.d("TVLyrics", "Netease search results: ${results.size} for '$keyword'")
             val best = results.firstOrNull { match(it, track) } ?: results.firstOrNull()
             if (best != null) {
                 val (lrc, yrc, trans) = NeteaseApi.getLyrics(best.id)
+                Log.d("TVLyrics", "Netease lyrics lrcLen=${lrc.length} yrcLen=${yrc?.length}")
                 val lines = if (!yrc.isNullOrBlank()) {
                     Parsers.mergeTranslation(Parsers.parseWordLyrics(yrc), trans)
                 } else {
@@ -32,7 +38,7 @@ object LyricsAggregator {
                 }
                 if (lines.isNotEmpty()) return Lyrics(lines, "网易云音乐")
             }
-        } catch (_: Exception) { /* 降级 */ }
+        } catch (e: Exception) { Log.e("TVLyrics", "Netease fail", e) }
 
         return null
     }
