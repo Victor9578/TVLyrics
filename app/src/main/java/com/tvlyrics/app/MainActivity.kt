@@ -40,10 +40,10 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private const val DARK = Color(0xFF101014)
-private const val GREEN = Color(0xFF1DB954)
-private const val DIM = Color(0xFF6E6E78)
-private const val WHITE = Color(0xFFEDEDF2)
+private val DARK = Color(0xFF101014)
+private val GREEN = Color(0xFF1DB954)
+private val DIM = Color(0xFF6E6E78)
+private val WHITE = Color(0xFFEDEDF2)
 
 @Composable
 private fun App() {
@@ -54,6 +54,7 @@ private fun App() {
 
 @Composable
 private fun LoginScreen() {
+    val context = androidx.compose.ui.platform.LocalContext.current
     var clientId by remember { mutableStateOf(SpotifyAuth.clientId) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -90,7 +91,7 @@ private fun LoginScreen() {
                         try {
                             val url = SpotifyAuth.loginUrl()
                             launch(Dispatchers.Main) {
-                                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                             }
                         } catch (e: Exception) {
                             error = e.message

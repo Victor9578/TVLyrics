@@ -3,9 +3,10 @@ package com.tvlyrics.app
 object Parsers {
     private val LRC_TIME = Regex("\\[(\\d{1,2}):(\\d{1,2})(?:[.:](\\d{1,3}))?]")
     private val LRC_OFFSET = Regex("^\\[offset:\\s*(-?\\d+)\\s*]", RegexOption.IGNORE_CASE)
-    // 行头: [开始,时长]；词: QRC 是 词(开始,时长)，YRC 是 ("词",开始,时长)
+    // 行头: [开始,时长]；词有两种格式：QRC 是 词(开始,时长)，YRC 是 ("词",开始,时长)
     private val LINE_HEAD = Regex("^\\[(\\d+),(\\d+)\\]")
-    private val WORD = Regex("(?:\"([^\"]*)\",|([^(]*?))\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)")
+    private val YRC_WORD = Regex("\\(\\\"([^\"]*)\\\",(\\d+),(\\d+)\\)")
+    private val QRC_WORD = Regex("([^(]*?)\\((\\d+),(\\d+)\\)")
 
     fun parseLrc(text: String): List<Line> {
         val lines = mutableListOf<Line>()
@@ -39,11 +40,20 @@ object Parsers {
             val head = LINE_HEAD.find(line) ?: return@forEach
             val lineStart = head.groupValues[1].toLong()
             val lineDur = head.groupValues[2].toLong()
-            val words = WORD.findAll(line.substring(head.value.length)).mapNotNull { m ->
-                val txt = (m.groupValues[1].ifEmpty { m.groupValues[2] }).trim()
-                if (txt.isEmpty()) null
-                else Word(txt, m.groupValues[3].toLong(), m.groupValues[3].toLong() + m.groupValues[4].toLong())
-            }.toList()
+            val body = line.substring(head.value.length)
+            val words = if (body.contains("\"")) {
+                YRC_WORD.findAll(body).mapNotNull { m ->
+                    val txt = m.groupValues[1].trim()
+                    if (txt.isEmpty()) null
+                    else Word(txt, m.groupValues[2].toLong(), m.groupValues[2].toLong() + m.groupValues[3].toLong())
+                }.toList()
+            } else {
+                QRC_WORD.findAll(body).mapNotNull { m ->
+                    val txt = m.groupValues[1].trim()
+                    if (txt.isEmpty()) null
+                    else Word(txt, m.groupValues[2].toLong(), m.groupValues[2].toLong() + m.groupValues[3].toLong())
+                }.toList()
+            }
             if (words.isEmpty()) return@forEach
             lines.add(Line(lineStart, lineStart + lineDur, words.joinToString("") { it.text }, words))
         }

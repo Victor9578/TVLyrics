@@ -26,7 +26,8 @@ class ParsersTest {
         assertEquals("你好", words[0].text)
         assertEquals(1234, words[0].startMs)
         assertEquals(1734, words[0].endMs)
-        assertEquals(2734, words[0].endMs + 0) // 1734+1000
+        assertEquals("世界", words[1].text)
+        assertEquals(2734, words[1].endMs) // 1734+1000
         assertEquals(3234, lines[0].endMs)
     }
 
