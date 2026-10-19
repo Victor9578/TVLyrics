@@ -1,4 +1,10 @@
-package com.tvlyrics.app
+package com.tvlyrics.app.domain
+
+import com.tvlyrics.app.codec.Parsers
+import com.tvlyrics.app.provider.QQMusicApi
+import com.tvlyrics.app.provider.NeteaseApi
+import com.tvlyrics.app.provider.AppleMusicApi
+import com.tvlyrics.app.codec.QrcDecrypt
 
 // 歌词聚合：获取所有可用歌词版本
 import android.util.Log
@@ -12,27 +18,48 @@ data class LyricSource(
 
 object LyricsAggregator {
     // 获取所有可用歌词版本（每个源的前N个结果）
-    fun fetchAll(track: Track, limitPerSource: Int = 5): List<LyricSource> {
+    fun fetchAll(track: Track, limitPerSource: Int = 3): List<LyricSource> {
         val sources = mutableListOf<LyricSource>()
         val keyword = buildString {
             append(track.title)
             track.artists.firstOrNull()?.let { append(" ").append(it) }
         }
 
-        // 1. QQ 音乐 - 取前 limitPerSource 个结果
+        // 0. Apple Music（AMLL）- Spotify ID 精确匹配，优先级最高
         try {
-            val results = QQMusicApi.search(keyword)
+            val record = AppleMusicApi.findBySpotifyId(AppleMusicApi.appContext, track.id)
+            if (record != null) {
+                Log.d("TVLyrics", "AMLL exact match: ${record.title}")
+                val lines = AppleMusicApi.getLyrics(record)
+                Log.d("TVLyrics", "AMLL lyric lines: ${lines.size}")
+                if (lines.isNotEmpty()) {
+                    sources.add(LyricSource(
+                        Track(record.id, record.title, record.artists, record.album, 0),
+                        "Apple Music", lines
+                    ))
+                }
+            }
+        } catch (e: Exception) { Log.e("TVLyrics", "AMLL fail", e) }
+
+        // 1. QQ 音乐 - "歌名 歌手"搜不到时降级用纯歌名再搜（QQ 限流会间歇性返回空，减少重试次数避免加重限流）
+        try {
+            var results = QQMusicApi.search(keyword)
             Log.d("TVLyrics", "QQ search results: ${results.size} for '$keyword'")
-            results.take(limitPerSource).forEach { candidate ->
+            if (results.isEmpty()) {
+                results = QQMusicApi.search(track.title)
+                Log.d("TVLyrics", "QQ retry with title only: ${results.size}")
+            }
+            var fetched = 0
+            for (candidate in results) {
+                if (fetched >= limitPerSource) break
                 try {
-                    val (raw, trans) = QQMusicApi.getLyrics(candidate.id)
-                    val lines = parseQQ(raw, trans)
+                    Thread.sleep(600) // 防止 -1901 反作弊拦截
+                    val (raw, trans, roma) = QQMusicApi.getLyrics(candidate.id)
+                    val lines = parseQQ(raw, trans, roma)
+                    Log.d("TVLyrics", "QQ lyric ${candidate.title}: ${lines.size} lines")
                     if (lines.isNotEmpty()) {
-                        sources.add(LyricSource(
-                            track = candidate,
-                            source = "QQ音乐",
-                            lines = lines
-                        ))
+                        sources.add(LyricSource(candidate, "QQ音乐", lines))
+                        fetched++
                     }
                 } catch (e: Exception) {
                     Log.e("TVLyrics", "QQ lyric fetch fail for ${candidate.id}", e)
@@ -40,10 +67,14 @@ object LyricsAggregator {
             }
         } catch (e: Exception) { Log.e("TVLyrics", "QQ search fail", e) }
 
-        // 2. 网易云 - 取前 limitPerSource 个结果
+        // 2. 网易云 - "歌名 歌手"搜不到时降级用纯歌名再搜
         try {
-            val results = NeteaseApi.search(keyword)
+            var results = NeteaseApi.search(keyword)
             Log.d("TVLyrics", "Netease search results: ${results.size} for '$keyword'")
+            if (results.isEmpty()) {
+                results = NeteaseApi.search(track.title)
+                Log.d("TVLyrics", "Netease retry with title only: ${results.size}")
+            }
             results.take(limitPerSource).forEach { candidate ->
                 try {
                     val (lrc, yrc, trans) = NeteaseApi.getLyrics(candidate.id)
@@ -79,24 +110,31 @@ object LyricsAggregator {
         return sources.firstOrNull()?.let { Lyrics(it.lines, "${it.source} · ${it.track.title}") }
     }
 
-    // QQ: lyric 字段可能是明文 LRC、明文 QRC XML、或加密 hex
-    private fun parseQQ(raw: String, trans: String?): List<Line> {
-        return parseQQForSearch(raw, trans)
+    // QQ: 原文可能是明文 LRC、明文 QRC XML、或加密 hex；翻译/罗马音同理，按行起始时间对齐
+    private fun parseQQ(raw: String, trans: String?, roma: String? = null): List<Line> {
+        return parseQQForSearch(raw, trans, roma)
     }
 
     // 公开给搜索使用
-    fun parseQQForSearch(raw: String, trans: String?): List<Line> {
-        val text = if (raw.contains("LyricContent")) {
-            QrcDecrypt.extractContent(raw) ?: raw
-        } else {
-            QrcDecrypt.decodeQrc(raw)?.let { QrcDecrypt.extractContent(it) ?: it } ?: raw
-        }
+    fun parseQQForSearch(raw: String, trans: String?, roma: String? = null): List<Line> {
+        val text = extractQqText(raw)
         val lines = if (text.contains("(") && Regex("\\[\\d+,-?\\d+\\]").containsMatchIn(text)) {
             Parsers.parseWordLyrics(text)
         } else {
             Parsers.parseLrc(text)
         }
-        return Parsers.mergeTranslation(lines, trans)
+        val transText = trans?.let { extractQqText(it) }
+        val romaText = roma?.let { extractQqText(it) }
+        var merged = Parsers.mergeTranslation(lines, transText)
+        if (romaText != null) merged = Parsers.mergeRomanization(merged, romaText)
+        return merged
+    }
+
+    // QRC XML 提取 LyricContent，明文直接返回
+    private fun extractQqText(raw: String): String {
+        return if (raw.contains("LyricContent")) {
+            QrcDecrypt.extractContent(raw) ?: raw
+        } else raw
     }
 
     // 粗匹配：标题包含 + 时长差 < 3s（时长 0 视为未知，跳过）

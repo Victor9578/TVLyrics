@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp" android:height="180dp"
+    android:viewportWidth="320" android:viewportHeight="180">
+    <!-- 深色背景 -->
+    <path android:fillColor="#FF101014" android:pathData="M0,0h320v180h-320z"/>
+    <!-- 绿色音符图标（居中偏左） -->
+    <group android:translateX="120" android:translateY="50">
+        <path android:fillColor="#FF1DB954" android:pathData="M0,0h80v80h-80z"/>
+        <path android:fillColor="#FFFFFFFF" android:pathData="M32,62V34l24,-5.5v28"/>
+        <path android:fillColor="#FFFFFFFF" android:pathData="M32,62m-7.5,0a7.5,7.5 0,1 1,15 0a7.5,7.5 0,1 1,-15 0"/>
+        <path android:fillColor="#FFFFFFFF" android:pathData="M56,56.5m-7.5,0a7.5,7.5 0,1 1,15 0a7.5,7.5 0,1 1,-15 0"/>
+    </group>
+    <!-- 文字：TV 歌词（用简单矩形拼"TV"） -->
+    <group android:translateX="215" android:translateY="70">
+        <!-- T -->
+        <path android:fillColor="#FFFFFFFF" android:pathData="M0,0h22v6h-8v34h-6v-34h-8z"/>
+        <!-- V -->
+        <path android:fillColor="#FFFFFFFF" android:pathData="M30,0h7l9,28 9,-28h7l-13,40h-6z"/>
+    </group>
+</vector>

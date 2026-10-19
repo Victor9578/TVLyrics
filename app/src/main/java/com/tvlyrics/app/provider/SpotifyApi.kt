@@ -1,4 +1,6 @@
-package com.tvlyrics.app
+package com.tvlyrics.app.provider
+
+import com.tvlyrics.app.domain.Track
 
 import org.json.JSONObject
 
@@ -21,7 +23,7 @@ data class PlaybackState(
 
 object SpotifyApi {
     // 轮询间隔：正常 10s；429 时按 Retry-After 退避（上限 120s）
-    const val POLL_INTERVAL_MS = 10_000L
+    const val POLL_INTERVAL_MS = 5_000L
     const val MAX_BACKOFF_MS = 120_000L
 
     fun getPlayback(accessToken: String): PlaybackState {
@@ -80,15 +82,15 @@ object SpotifyApi {
         )
     }
 
-    // 检查是否已收藏
+    // 检查是否已收藏（正确接口：/me/tracks/contains 返回 [true/false]）
     fun isLiked(accessToken: String, trackId: String): Boolean {
         val resp = Http.get(
-            "https://api.spotify.com/v1/me/tracks?ids=$trackId",
+            "https://api.spotify.com/v1/me/tracks/contains?ids=$trackId",
             mapOf("Authorization" to "Bearer $accessToken")
         )
         if (resp.code != 200) return false
-        val obj = JSONObject(resp.body)
-        return obj.optJSONArray("tracks")?.let { it.length() > 0 && !it.isNull(0) } ?: false
+        val arr = org.json.JSONArray(resp.body)
+        return arr.length() > 0 && arr.optBoolean(0)
     }
 
     // 切换收藏状态
@@ -114,6 +116,23 @@ object SpotifyApi {
             "",
             mapOf("Authorization" to "Bearer $accessToken")
         )
+    }
+
+    // 获取正在播放的队列（含当前播放 + 待播列表）
+    fun getQueue(accessToken: String): Pair<Track?, List<Track>> {
+        val resp = Http.get(
+            "https://api.spotify.com/v1/me/player/queue",
+            mapOf("Authorization" to "Bearer $accessToken")
+        )
+        if (resp.code != 200) return null to emptyList()
+        val obj = JSONObject(resp.body)
+        val current = parseTrack(obj.optJSONObject("currently_playing"))
+        val items = obj.optJSONArray("queue") ?: return current to emptyList()
+        val queue = mutableListOf<Track>()
+        for (i in 0 until items.length()) {
+            parseTrack(items.optJSONObject(i))?.let { queue.add(it) }
+        }
+        return current to queue
     }
 
     // 获取用户播放列表

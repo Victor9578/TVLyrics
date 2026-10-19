@@ -1,4 +1,7 @@
-package com.tvlyrics.app
+package com.tvlyrics.app.provider
+
+import com.tvlyrics.app.codec.Parsers
+import com.tvlyrics.app.domain.Track
 
 import android.util.Log
 import org.json.JSONObject

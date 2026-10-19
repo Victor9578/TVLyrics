@@ -1,15 +1,38 @@
 package com.tvlyrics.app
 
+import com.tvlyrics.app.codec.Parsers
+import com.tvlyrics.app.codec.QrcDecrypt
+import com.tvlyrics.app.codec.QqDesLike
+import com.tvlyrics.app.domain.LyricsAggregator
+import com.tvlyrics.app.domain.LyricSource
+import com.tvlyrics.app.domain.Track
+import com.tvlyrics.app.domain.Line
+import com.tvlyrics.app.domain.Word
+import com.tvlyrics.app.domain.Lyrics
+import com.tvlyrics.app.provider.Http
+import com.tvlyrics.app.provider.QQMusicApi
+import com.tvlyrics.app.provider.NeteaseApi
+import com.tvlyrics.app.provider.AppleMusicApi
+import com.tvlyrics.app.provider.SpotifyApi
+import com.tvlyrics.app.provider.PlaybackState
+import com.tvlyrics.app.provider.SpotifyAuth
+
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.background
+import androidx.compose.ui.composed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -18,10 +41,21 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
@@ -29,7 +63,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -41,10 +74,43 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 沉浸模式：隐藏状态栏和导航栏（歌词应用全屏）
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         SpotifyAuth.init(this)
         prefs = AppPrefs(this)
+        AppleMusicApi.init(this)
         isAuthorized = mutableStateOf(SpotifyAuth.isAuthorized)
-        setContent { App(isAuthorized.value, prefs) }
+        setContent {
+            // 全局字体：MiSans（最接近苹方的免费商用字体），中英文统一
+            val misans = FontFamily(
+                Font(R.font.misans_regular, FontWeight.Normal),
+                Font(R.font.misans_medium, FontWeight.Medium),
+                Font(R.font.misans_bold, FontWeight.Bold),
+            )
+            val typography = androidx.compose.material3.Typography(
+                displayLarge = androidx.compose.material3.Typography().displayLarge.copy(fontFamily = misans),
+                displayMedium = androidx.compose.material3.Typography().displayMedium.copy(fontFamily = misans),
+                displaySmall = androidx.compose.material3.Typography().displaySmall.copy(fontFamily = misans),
+                headlineLarge = androidx.compose.material3.Typography().headlineLarge.copy(fontFamily = misans),
+                headlineMedium = androidx.compose.material3.Typography().headlineMedium.copy(fontFamily = misans),
+                headlineSmall = androidx.compose.material3.Typography().headlineSmall.copy(fontFamily = misans),
+                titleLarge = androidx.compose.material3.Typography().titleLarge.copy(fontFamily = misans),
+                titleMedium = androidx.compose.material3.Typography().titleMedium.copy(fontFamily = misans),
+                titleSmall = androidx.compose.material3.Typography().titleSmall.copy(fontFamily = misans),
+                bodyLarge = androidx.compose.material3.Typography().bodyLarge.copy(fontFamily = misans),
+                bodyMedium = androidx.compose.material3.Typography().bodyMedium.copy(fontFamily = misans),
+                bodySmall = androidx.compose.material3.Typography().bodySmall.copy(fontFamily = misans),
+                labelLarge = androidx.compose.material3.Typography().labelLarge.copy(fontFamily = misans),
+                labelMedium = androidx.compose.material3.Typography().labelMedium.copy(fontFamily = misans),
+                labelSmall = androidx.compose.material3.Typography().labelSmall.copy(fontFamily = misans),
+            )
+            androidx.compose.material3.MaterialTheme(typography = typography) {
+                App(isAuthorized.value, prefs)
+            }
+        }
         handleLoginRedirect(intent)
     }
 
@@ -74,6 +140,38 @@ private val DIM = Color(0xFF6E6E78)
 private val WHITE = Color(0xFFEDEDF2)
 private val GRAY = Color(0xFF888888)
 private val RED_HEART = Color(0xFFE9143B)
+
+// 全局动态尺寸：按屏高百分比，手机/电视自适应
+data class Dimens(
+    val barTitle: androidx.compose.ui.unit.TextUnit,   // bar 歌名
+    val barArtist: androidx.compose.ui.unit.TextUnit,   // bar 歌手
+    val status: androidx.compose.ui.unit.TextUnit,      // 底部来源文字
+    val icon: androidx.compose.ui.unit.Dp,               // 图标大小
+    val button: androidx.compose.ui.unit.Dp,             // 按钮触控区
+    val padH: androidx.compose.ui.unit.Dp,                // 水平内边距
+    val padV: androidx.compose.ui.unit.Dp,               // 垂直内边距
+    val gap: androidx.compose.ui.unit.Dp,                // bar与歌词间距
+    val blur: androidx.compose.ui.unit.Dp,               // 背景模糊半径
+    val topInset: androidx.compose.ui.unit.Dp,           // 竖屏顶部留空
+) {
+    companion object {
+        fun from(c: android.content.res.Configuration): Dimens {
+            val h = c.screenHeightDp.toFloat()
+            return Dimens(
+                barTitle = (h * 0.050f).sp,
+                barArtist = (h * 0.034f).sp,
+                status = (h * 0.030f).sp,
+                icon = (h * 0.055f).dp,
+                button = (h * 0.11f).dp,
+                padH = (h * 0.05f).dp,
+                padV = (h * 0.04f).dp,
+                gap = (h * 0.035f).dp,
+                blur = (h * 0.17f).dp,
+                topInset = (h * 0.10f).dp,
+            )
+        }
+    }
+}
 
 @Composable
 private fun App(authorized: Boolean, prefs: AppPrefs) {
@@ -149,9 +247,9 @@ private fun LyricsScreen(prefs: AppPrefs) {
     var showMenu by remember { mutableStateOf(false) }
     var showPlaylist by remember { mutableStateOf(false) }
     var showSourceDialog by remember { mutableStateOf(false) }
-    var showSearchDialog by remember { mutableStateOf(false) }
     var isLiked by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
+    var isRefreshingSources by remember { mutableStateOf(false) }
 
     // 轮询循环
     LaunchedEffect(Unit) {
@@ -180,14 +278,11 @@ private fun LyricsScreen(prefs: AppPrefs) {
         val track = playback.track ?: return@LaunchedEffect
         currentLyrics = null
         status = "搜索歌词…"
-        
-        // 获取所有歌词源
         val sources = withIO { LyricsAggregator.fetchAll(track) }
         allSources = sources
-        currentLyrics = sources.firstOrNull()?.let { Lyrics(it.lines, it.source) }
+        currentLyrics = sources.firstOrNull()?.let { Lyrics(it.lines, "${it.source} · ${it.track.title}") }
         status = currentLyrics?.source ?: "未找到歌词"
-        
-        // 检查收藏状态
+
         withIO {
             try {
                 val token = SpotifyAuth.accessToken() ?: return@withIO
@@ -205,23 +300,137 @@ private fun LyricsScreen(prefs: AppPrefs) {
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.screenWidthDp > configuration.screenHeightDp
 
+    // 全部动态尺寸：按屏高百分比（手机/电视自适应）
+    val d = Dimens.from(configuration)
+
+    val anyPanelOpen = showMenu || showSourceDialog || showPlaylist
+
     Box(modifier = Modifier.fillMaxSize()) {
-        // 全屏模糊背景
+        // 主内容层（面板打开时背景模糊，与沉浸式风格适配）
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .then(if (anyPanelOpen && android.os.Build.VERSION.SDK_INT >= 31) Modifier.blur(18.dp) else Modifier)
+        ) {
+        // 封面取色（暗柔色，参考音乐播放器沉浸式背景方案）
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var dominantColor by remember(track?.albumArtUrl) {
+        mutableStateOf<Color?>(null)
+    }
+    // 封面 bitmap（Clamp 延展绘制用）
+    var artBitmap by remember(track?.albumArtUrl) {
+        mutableStateOf<android.graphics.Bitmap?>(null)
+    }
+    LaunchedEffect(track?.albumArtUrl) {
+        val url = track?.albumArtUrl ?: return@LaunchedEffect
+        try {
+            val loader = coil.Coil.imageLoader(context)
+            val request = coil.request.ImageRequest.Builder(context)
+                .data(url).allowHardware(false).build()
+            val bitmap = (loader.execute(request).drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+            if (bitmap != null) {
+                artBitmap = bitmap
+                val palette = androidx.palette.graphics.Palette.from(bitmap).generate()
+                val rgb = palette.darkMutedSwatch?.rgb
+                    ?: palette.darkVibrantSwatch?.rgb
+                    ?: palette.mutedSwatch?.rgb
+                    ?: 0xFF2B1B15.toInt()
+                // HSL 调色：饱和度+0.12 丰富氛围，亮度-0.05 保歌词对比度
+                val hsl = FloatArray(3)
+                android.graphics.Color.colorToHSV(rgb, hsl)
+                hsl[1] = (hsl[1] + 0.1f).coerceAtMost(1f)
+                hsl[2] = (hsl[2] - 0.08f).coerceAtLeast(0f)
+                dominantColor = Color(android.graphics.Color.HSVToColor(hsl))
+            }
+        } catch (_: Exception) { dominantColor = Color(0xFF2B1B15) }
+    }
+    val baseColor = dominantColor ?: DARK
+
+    Box(modifier = Modifier.fillMaxSize()) {
         if (track?.albumArtUrl != null) {
-            Box(modifier = Modifier.fillMaxSize()) {
+            if (isLandscape) {
+                // ===== 定版：清晰全屏底 + 左侧45%清晰封面 + 从封面60%向右 blur(92dp)+晕染 =====
+                // ① 封面图 Crop 全屏（清晰底层）
                 AsyncImage(
                     model = track.albumArtUrl,
                     contentDescription = null,
-                    modifier = Modifier.fillMaxSize().blur(60.dp),
+                    modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
                 )
-                Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.4f)))
+                // ② 左侧封面层 45% Crop 填充（保证左侧绝对清晰）
+                AsyncImage(
+                    model = track.albumArtUrl,
+                    contentDescription = "专辑封面",
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(0.45f)
+                        .align(Alignment.CenterStart),
+                    contentScale = ContentScale.Crop,
+                )
+                // ③ 模糊层：从封面 60%（屏宽 27%）向右渐显 blur(92dp)
+                AsyncImage(
+                    model = track.albumArtUrl,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .blur(d.blur * 1.5f)
+                        .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+                        .drawWithContent {
+                            drawContent()
+                            // DstIn：封面 60% 前（屏 27%）完全透明露清晰图，向右渐显
+                            drawRect(
+                                brush = Brush.horizontalGradient(
+                                    colorStops = arrayOf(
+                                        0.0f to Color.Transparent,
+                                        0.27f to Color.Transparent,
+                                        0.50f to Color.Black,
+                                        1.0f to Color.Black,
+                                    )
+                                ),
+                                blendMode = BlendMode.DstIn,
+                            )
+                        },
+                    contentScale = ContentScale.Crop,
+                )
+                // ④ 氛围晕染渐变（与模糊同步，从屏 27% 向右加深，保歌词可读）
+                Box(
+                    modifier = Modifier.fillMaxSize().background(
+                        Brush.horizontalGradient(
+                            colorStops = arrayOf(
+                                0.0f to Color.Transparent,
+                                0.27f to Color.Transparent,
+                                0.50f to baseColor.copy(alpha = 0.25f),
+                                0.75f to baseColor.copy(alpha = 0.55f),
+                                1.0f to baseColor.copy(alpha = 0.65f),
+                            )
+                        )
+                    )
+                )
+            } else {
+                // 竖屏：全屏模糊 + 垂直晕染
+                AsyncImage(
+                    model = track.albumArtUrl,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize().blur(d.blur).alpha(0.7f),
+                    contentScale = ContentScale.Crop,
+                )
+                Box(
+                    modifier = Modifier.fillMaxSize().background(
+                        Brush.verticalGradient(
+                            colorStops = arrayOf(
+                                0.0f to Color.Transparent,
+                                0.5f to baseColor.copy(alpha = 0.3f),
+                                1.0f to baseColor.copy(alpha = 0.6f),
+                            )
+                        )
+                    )
+                )
             }
         } else {
             Box(modifier = Modifier.fillMaxSize().background(DARK))
         }
 
-        // 内容层
+        // 歌词内容层
         if (isLandscape) {
             LandscapeLyrics(
                 track = track,
@@ -230,8 +439,12 @@ private fun LyricsScreen(prefs: AppPrefs) {
                 status = status,
                 isPlaying = isPlaying,
                 isLiked = isLiked,
+                dims = d,
+                
                 onLike = {
-                    kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) { isLiked = toggleLike(playback) }
+                    kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+                        isLiked = toggleLike(playback)
+                    }
                 },
                 onPlayPause = {
                     togglePlayPause()
@@ -239,7 +452,6 @@ private fun LyricsScreen(prefs: AppPrefs) {
                 },
                 onShowMenu = { showMenu = true },
                 onShowPlaylist = { showPlaylist = true },
-                onSwitchSource = { showSourceDialog = true }
             )
         } else {
             PortraitLyrics(
@@ -249,8 +461,12 @@ private fun LyricsScreen(prefs: AppPrefs) {
                 status = status,
                 isPlaying = isPlaying,
                 isLiked = isLiked,
+                dims = d,
+                
                 onLike = {
-                    kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) { isLiked = toggleLike(playback) }
+                    kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+                        isLiked = toggleLike(playback)
+                    }
                 },
                 onPlayPause = {
                     togglePlayPause()
@@ -258,57 +474,53 @@ private fun LyricsScreen(prefs: AppPrefs) {
                 },
                 onShowMenu = { showMenu = true },
                 onShowPlaylist = { showPlaylist = true },
-                onSwitchSource = { showSourceDialog = true }
             )
         }
+        }
+        } // 主内容层结束（模糊 Box 在此关闭，面板在外）
 
-        // 设置弹窗
-        if (showMenu) {
-            SettingsDialog(
+        // 设置：右侧滑入面板
+        RightPanel(visible = showMenu, onClose = { showMenu = false }) {
+            SettingsContent(
                 prefs = prefs,
-                onDismiss = { showMenu = false },
-                onSwitchSource = { 
+                onSwitchSource = {
                     showMenu = false
                     showSourceDialog = true
-                },
-                onSearchLyrics = {
-                    showMenu = false
-                    showSearchDialog = true
                 }
             )
         }
-        
-        // 歌词搜索弹窗
-        if (showSearchDialog) {
-            LyricsSearchDialog(
-                currentTrack = playback.track,
-                onSelectLyrics = { lines, source ->
-                    currentLyrics = Lyrics(lines, source)
-                    status = source
-                    showSearchDialog = false
-                },
-                onDismiss = { showSearchDialog = false }
-            )
-        }
 
-        // 歌词源选择弹窗
-        if (showSourceDialog) {
-            SourceSelectDialog(
+        // 歌词源选择：右侧滑入面板
+        RightPanel(visible = showSourceDialog, onClose = { showSourceDialog = false }) {
+            SourceSelectContent(
                 sources = allSources,
                 currentSource = currentLyrics?.source ?: "",
+                isRefreshing = isRefreshingSources,
                 onSelect = { source ->
-                    currentLyrics = Lyrics(source.lines, source.source)
-                    status = source.source
+                    currentLyrics = Lyrics(source.lines, "${source.source} · ${source.track.title}")
+                    status = currentLyrics?.source ?: ""
                     showSourceDialog = false
                 },
-                onDismiss = { showSourceDialog = false }
+                onRefresh = {
+                    val t = playback.track
+                    if (t != null) {
+                        isRefreshingSources = true
+                        kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+                            val sources = LyricsAggregator.fetchAll(t)
+                            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                                allSources = sources
+                                isRefreshingSources = false
+                            }
+                        }
+                    }
+                },
             )
         }
 
-        // 播放列表弹窗
-        if (showPlaylist) {
-            PlaylistDialog(
-                onDismiss = { showPlaylist = false },
+        // 播放队列：右侧滑入面板
+        RightPanel(visible = showPlaylist, onClose = { showPlaylist = false }) {
+            QueueContent(
+                currentTrack = track,
                 onPlayTrack = { trackId ->
                     kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
                         try {
@@ -323,11 +535,76 @@ private fun LyricsScreen(prefs: AppPrefs) {
     }
 }
 
+// ---------- 右侧滑入面板（背景模糊 + 遮罩 + 焦点高亮适配遥控器） ----------
+@Composable
+private fun RightPanel(
+    visible: Boolean,
+    onClose: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    androidx.compose.animation.AnimatedVisibility(
+        visible = visible,
+        enter = androidx.compose.animation.slideInHorizontally(animationSpec = androidx.compose.animation.core.tween(250)) { it } +
+                androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(250)),
+        exit = androidx.compose.animation.slideOutHorizontally(animationSpec = androidx.compose.animation.core.tween(200)) { it } +
+                androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(200)),
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            // 遮罩：点击关闭
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.35f))
+                    .clickable { onClose() }
+            )
+            // 面板：右侧 42% 宽，全高
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(0.42f)
+                    .align(Alignment.CenterEnd)
+                    .background(DARKER)
+                    .clickable(enabled = false) {} // 拦截点击穿透
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(20.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    // 关闭按钮
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        IconButton(onClick = onClose) {
+                            Icon(Icons.Filled.Close, contentDescription = "关闭", tint = WHITE, modifier = Modifier.size(28.dp))
+                        }
+                    }
+                    content()
+                }
+            }
+        }
+    }
+}
+
+// 焦点高亮（遥控器/键盘导航时可见选中项）
+@Composable
+private fun Modifier.focusHighlight(): Modifier = composed {
+    var focused by remember { mutableStateOf(false) }
+    this
+        .onFocusChanged { focused = it.isFocused }
+        .background(
+            if (focused) Color.White.copy(alpha = 0.18f) else Color.Transparent,
+            RoundedCornerShape(8.dp)
+        )
+}
+
 private fun togglePlayPause() {
     kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
         try {
             val token = SpotifyAuth.accessToken() ?: return@launch
-            val state = SpotifyApi.getPlayback(token) ?: return@launch
+            val state = SpotifyApi.getPlayback(token)
             if (state.isPlaying) SpotifyApi.pause(token) else SpotifyApi.resume(token)
         } catch (_: Exception) {}
     }
@@ -341,6 +618,47 @@ private suspend fun toggleLike(state: PlaybackState): Boolean = withIO {
     } catch (_: Exception) { false }
 }
 
+// ---------- 顶部 Bar（横竖屏共用） ----------
+@Composable
+private fun TopBar(
+    track: Track?,
+    isPlaying: Boolean,
+    isLiked: Boolean,
+    dims: Dimens,
+    
+    onLike: () -> Unit,
+    onPlayPause: () -> Unit,
+    onShowMenu: () -> Unit,
+    onShowPlaylist: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            track?.let {
+                Text(it.title, color = WHITE, fontSize = dims.barTitle, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(it.artists.joinToString(" / "), color = WHITE.copy(alpha = 0.75f), fontSize = dims.barArtist, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        Row {
+            IconButton(onClick = onPlayPause, modifier = Modifier.size(dims.button)) {
+                Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, contentDescription = "暂停", tint = WHITE, modifier = Modifier.size(dims.icon))
+            }
+            IconButton(onClick = onShowPlaylist, modifier = Modifier.size(dims.button)) {
+                Icon(Icons.Filled.QueueMusic, contentDescription = "歌单", tint = WHITE, modifier = Modifier.size(dims.icon))
+            }
+            IconButton(onClick = onLike, modifier = Modifier.size(dims.button)) {
+                Icon(if (isLiked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "收藏", tint = WHITE, modifier = Modifier.size(dims.icon))
+            }
+            IconButton(onClick = onShowMenu, modifier = Modifier.size(dims.button)) {
+                Icon(Icons.Filled.MoreVert, contentDescription = "更多", tint = WHITE, modifier = Modifier.size(dims.icon))
+            }
+        }
+    }
+}
+
 // ---------- 横屏布局 ----------
 @Composable
 private fun LandscapeLyrics(
@@ -350,74 +668,26 @@ private fun LandscapeLyrics(
     status: String,
     isPlaying: Boolean,
     isLiked: Boolean,
+    dims: Dimens,
+    
     onLike: () -> Unit,
     onPlayPause: () -> Unit,
     onShowMenu: () -> Unit,
-    onShowPlaylist: () -> Unit,
-    onSwitchSource: () -> Unit
+    onShowPlaylist: () -> Unit
 ) {
-    Row(modifier = Modifier.fillMaxSize()) {
-        // 左侧：专辑封面（占满左边全部空间）
-        Box(
+    // 内容层占右侧（避开左侧清晰封面+羽化区）
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
             modifier = Modifier
                 .fillMaxHeight()
-                .weight(0.5f)
-                .clip(RoundedCornerShape(0.dp))
+                .fillMaxWidth(0.55f)
+                .align(Alignment.CenterEnd)
+                .padding(horizontal = dims.padH, vertical = dims.padV),
         ) {
-            if (track?.albumArtUrl != null) {
-                AsyncImage(
-                    model = track.albumArtUrl,
-                    contentDescription = "专辑封面",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                )
-            } else {
-                Box(
-                    modifier = Modifier.fillMaxSize().background(DARKER.copy(alpha = 0.5f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Filled.MusicNote, contentDescription = null, tint = DIM, modifier = Modifier.size(80.dp))
-                }
-            }
-        }
-
-        Spacer(Modifier.width(20.dp))
-
-        // 右侧区域
-        Column(
-            modifier = Modifier.weight(0.5f).fillMaxHeight().padding(20.dp),
-            verticalArrangement = Arrangement.SpaceBetween
-        ) {
-            // 右上 Bar：歌曲名+歌手（左）+ 按钮（右）
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    track?.let {
-                        Text(it.title, color = WHITE, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(it.artists.joinToString(" / "), color = GRAY, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-                    IconButton(onClick = onPlayPause, modifier = Modifier.size(40.dp)) {
-                        Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, contentDescription = "暂停", tint = WHITE, modifier = Modifier.size(24.dp))
-                    }
-                    IconButton(onClick = onShowPlaylist, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Filled.QueueMusic, contentDescription = "歌单", tint = WHITE, modifier = Modifier.size(22.dp))
-                    }
-                    IconButton(onClick = onLike, modifier = Modifier.size(40.dp)) {
-                        Icon(if (isLiked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "收藏", tint = if (isLiked) RED_HEART else WHITE, modifier = Modifier.size(22.dp))
-                    }
-                    IconButton(onClick = onShowMenu, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Filled.MoreVert, contentDescription = "更多", tint = WHITE, modifier = Modifier.size(22.dp))
-                    }
-                }
-            }
-
-            // 右下歌词区
-            LyricsList(lyrics = lyrics, progress = progress, status = status)
+            TopBar(track, isPlaying, isLiked, dims, onLike, onPlayPause, onShowMenu, onShowPlaylist)
+            Spacer(Modifier.height(dims.gap))
+            LyricsList(lyrics = lyrics, progress = progress, status = status, modifier = Modifier.weight(1f))
+            Text(status, color = WHITE.copy(alpha = 0.4f), fontSize = dims.status, modifier = Modifier.padding(top = dims.gap))
         }
     }
 }
@@ -431,57 +701,25 @@ private fun PortraitLyrics(
     status: String,
     isPlaying: Boolean,
     isLiked: Boolean,
+    dims: Dimens,
+    
     onLike: () -> Unit,
     onPlayPause: () -> Unit,
     onShowMenu: () -> Unit,
-    onShowPlaylist: () -> Unit,
-    onSwitchSource: () -> Unit
+    onShowPlaylist: () -> Unit
 ) {
     Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.fillMaxSize().padding(horizontal = dims.padH),
     ) {
-        Spacer(Modifier.height(48.dp))
-        
-        // Bar：歌曲名+歌手（左）+ 按钮（右）
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                track?.let {
-                    Text(it.title, color = WHITE, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(it.artists.joinToString(" / "), color = GRAY, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-                IconButton(onClick = onPlayPause, modifier = Modifier.size(40.dp)) {
-                    Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, contentDescription = "暂停", tint = WHITE, modifier = Modifier.size(24.dp))
-                }
-                IconButton(onClick = onShowPlaylist, modifier = Modifier.size(40.dp)) {
-                    Icon(Icons.Filled.QueueMusic, contentDescription = "歌单", tint = WHITE, modifier = Modifier.size(22.dp))
-                }
-                IconButton(onClick = onLike, modifier = Modifier.size(40.dp)) {
-                    Icon(if (isLiked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, contentDescription = "收藏", tint = if (isLiked) RED_HEART else WHITE, modifier = Modifier.size(22.dp))
-                }
-                IconButton(onClick = onShowMenu, modifier = Modifier.size(40.dp)) {
-                    Icon(Icons.Filled.MoreVert, contentDescription = "更多", tint = WHITE, modifier = Modifier.size(22.dp))
-                }
-            }
-        }
-
-        Spacer(Modifier.height(24.dp))
-
-        // 歌词区
+        Spacer(Modifier.height(dims.topInset))
+        TopBar(track, isPlaying, isLiked, dims, onLike, onPlayPause, onShowMenu, onShowPlaylist)
+        Spacer(Modifier.height(dims.gap))
         LyricsList(lyrics = lyrics, progress = progress, status = status, modifier = Modifier.weight(1f))
-
-        // 底部来源
-        Text(status, color = WHITE.copy(alpha = 0.4f), fontSize = 12.sp, modifier = Modifier.padding(bottom = 24.dp))
+        Text(status, color = WHITE.copy(alpha = 0.4f), fontSize = dims.status, modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = dims.padV, top = dims.gap))
     }
 }
 
-// ---------- 歌词列表组件 ----------
+// ---------- 歌词列表组件（当前行钉在固定锚点，顶部渐隐） ----------
 @Composable
 private fun LyricsList(
     lyrics: Lyrics?,
@@ -491,75 +729,103 @@ private fun LyricsList(
 ) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
-    val lineHeight = 52.dp  // 固定每行高度，确保四行
-    
-    // 自动滚动到当前行，保持当前行在固定锚点（中间偏下位置）
-    LaunchedEffect(progress, lyrics) {
-        if (lyrics != null) {
-            val currentIndex = lyrics.lines.indexOfLast { it.startMs <= progress }.coerceAtLeast(0)
-            if (currentIndex >= 0) {
+
+    // 当前行索引（换行立即触发，不再按秒轮询）
+    val currentIdx = lyrics?.lines?.indexOfLast { it.startMs <= progress }?.coerceAtLeast(0) ?: 0
+
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        // 动态字号：按容器高度估算（约4行）
+        val estLineHeight = maxHeight / 4
+        val mainFontSize = (estLineHeight.value * 0.45f).sp
+        val transFontSize = (estLineHeight.value * 0.24f).sp
+        // 锚点：当前行顶部距歌词区顶部 1/4 高度（负偏移实现，不受前行高度影响）
+        val anchorPx = with(androidx.compose.ui.platform.LocalDensity.current) { (maxHeight / 4).toPx() }
+
+        // 歌词切换：直接定位（无动画）
+        LaunchedEffect(lyrics) {
+            if (lyrics != null) {
+                // +1 跳过顶部占位项；负偏移把当前行顶部钉在锚点
+                listState.scrollToItem(currentIdx + 1, -anchorPx.toInt())
+            }
+        }
+        // 行变化：立即动画滚动到锚点
+        LaunchedEffect(lyrics, currentIdx) {
+            if (lyrics != null) {
                 coroutineScope.launch {
-                    // 滚动到当前行，使其位于锚点位置（预留2个空白行）
-                    listState.animateScrollToItem(maxOf(0, currentIndex + 2))
+                    listState.animateScrollToItem(currentIdx + 1, -anchorPx.toInt())
                 }
             }
         }
-    }
 
-    Box(modifier = modifier.fillMaxWidth()) {
         if (lyrics != null) {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(0.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // 顶部渐隐：从 bar 下方淡入，遮住上方溢出内容
+                    .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+                    .drawWithContent {
+                        drawContent()
+                        val fade = size.height * 0.12f
+                        drawRect(
+                            brush = Brush.verticalGradient(
+                                colors = listOf(Color.Transparent, Color.Black),
+                                startY = 0f,
+                                endY = fade,
+                            ),
+                            blendMode = BlendMode.DstIn,
+                        )
+                    },
             ) {
-                // 顶部空白占位（2行高度），确保第一首歌开始时光标位置正确
-                item {
-                    Spacer(Modifier.height(lineHeight * 2))
-                }
-                
+                // 顶部空白占位 = 锚点高度，第一行也停在锚点
+                item { Spacer(Modifier.height(maxHeight / 4)) }
+
                 items(lyrics.lines.size) { index ->
                     val line = lyrics.lines[index]
-                    val isCurrent = index == lyrics.lines.indexOfLast { it.startMs <= progress }
+                    val isCurrent = index == currentIdx
                     val alpha = when {
                         isCurrent -> 1f
-                        index < lyrics.lines.indexOfLast { it.startMs <= progress } -> 0.4f
+                        index < currentIdx -> 0.4f
                         else -> 0.2f
                     }
-                    
-                    Box(
+
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(lineHeight),
-                        contentAlignment = Alignment.CenterStart
+                            .padding(vertical = estLineHeight / 6),
                     ) {
-                        Column {
+                        // 主歌词：长行自动换行
+                        Text(
+                            line.text,
+                            color = WHITE.copy(alpha = alpha),
+                            fontSize = mainFontSize,
+                            lineHeight = mainFontSize * 1.2,
+                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                        )
+                        if (line.translation != null) {
                             Text(
-                                line.text,
-                                color = WHITE.copy(alpha = alpha),
-                                fontSize = 22.sp,
-                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
+                                line.translation,
+                                // 未高亮翻译与未高亮歌词同色（白 40%）
+                                color = if (isCurrent) WHITE.copy(alpha = 0.85f) else WHITE.copy(alpha = 0.4f),
+                                fontSize = transFontSize,
+                                lineHeight = transFontSize * 1.2,
+                                fontWeight = FontWeight.Medium,
                             )
-                            if (line.translation != null) {
-                                Text(
-                                    line.translation,
-                                    color = if (isCurrent) GRAY.copy(alpha = 0.9f) else GRAY.copy(alpha = 0.4f),
-                                    fontSize = 14.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.padding(top = 2.dp),
-                                )
-                            }
+                        }
+                        if (line.romanization != null) {
+                            Text(
+                                line.romanization,
+                                color = if (isCurrent) WHITE.copy(alpha = 0.7f) else WHITE.copy(alpha = 0.4f),
+                                fontSize = transFontSize,
+                                lineHeight = transFontSize * 1.2,
+                                fontWeight = FontWeight.Medium,
+                            )
                         }
                     }
                 }
-                
-                // 底部空白占位（2行高度），确保最后一首歌结束时光标位置正确
-                item {
-                    Spacer(Modifier.height(lineHeight * 2))
-                }
+
+                // 底部空白占位，让最后一行也能停在锚点
+                item { Spacer(Modifier.height(maxHeight / 2)) }
             }
         } else {
             Text(status, color = WHITE.copy(alpha = 0.6f), fontSize = 18.sp)
@@ -567,256 +833,241 @@ private fun LyricsList(
     }
 }
 
-// ---------- 设置弹窗 ----------
+// ---------- 设置：底部滑入面板 ----------
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsDialog(
+private fun ColumnScope.SettingsContent(
     prefs: AppPrefs,
-    onDismiss: () -> Unit,
-    onSwitchSource: () -> Unit,
-    onSearchLyrics: () -> Unit = {}
+    onSwitchSource: () -> Unit
 ) {
     var offset by remember { mutableFloatStateOf(prefs.lyricOffset.toFloat()) }
     var showOffsetSlider by remember { mutableStateOf(false) }
 
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            modifier = Modifier.fillMaxWidth(0.85f),
-            colors = CardDefaults.cardColors(containerColor = DARKER.copy(alpha = 0.95f))
+    Text("设置", color = WHITE, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+    Spacer(Modifier.height(20.dp))
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceEvenly
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .focusHighlight()
+                .clickable { onSwitchSource() }
+                .padding(12.dp)
         ) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                Text("设置", color = WHITE, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(16.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.clickable { onSwitchSource() }
-                    ) {
-                        Icon(Icons.Filled.SwapHoriz, contentDescription = "切换歌词源", tint = GREEN, modifier = Modifier.size(28.dp))
-                        Spacer(Modifier.height(4.dp))
-                        Text("切换歌词", color = GRAY, fontSize = 12.sp)
-                    }
-
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.clickable { showOffsetSlider = !showOffsetSlider }
-                    ) {
-                        Icon(Icons.Filled.Tune, contentDescription = "歌词偏移", tint = if (prefs.lyricOffset != 0) GREEN else DIM, modifier = Modifier.size(28.dp))
-                        Spacer(Modifier.height(4.dp))
-                        Text("偏移${prefs.lyricOffset}ms", color = GRAY, fontSize = 12.sp)
-                    }
-                }
-
-                if (showOffsetSlider) {
-                    Spacer(Modifier.height(16.dp))
-                    Slider(
-                        value = offset,
-                        onValueChange = { offset = it },
-                        valueRange = -3000f..3000f,
-                        onValueChangeFinished = { prefs.lyricOffset = offset.toInt() },
-                        colors = SliderDefaults.colors(thumbColor = GREEN, activeTrackColor = GREEN)
-                    )
-                    Text("当前: ${prefs.lyricOffset}ms", color = DIM, fontSize = 12.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
-                }
-
-                Spacer(Modifier.height(16.dp))
-                TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) {
-                    Text("关闭", color = GREEN)
-                }
-            }
+            Icon(Icons.Filled.SwapHoriz, contentDescription = "切换歌词源", tint = GREEN, modifier = Modifier.size(32.dp))
+            Spacer(Modifier.height(4.dp))
+            Text("切换歌词", color = GRAY, fontSize = 12.sp)
         }
+
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .focusHighlight()
+                .clickable { showOffsetSlider = !showOffsetSlider }
+                .padding(12.dp)
+        ) {
+            Icon(Icons.Filled.Tune, contentDescription = "歌词偏移", tint = if (prefs.lyricOffset != 0) GREEN else WHITE, modifier = Modifier.size(32.dp))
+            Spacer(Modifier.height(4.dp))
+            Text("偏移 ${prefs.lyricOffset}ms", color = GRAY, fontSize = 12.sp)
+        }
+    }
+
+    if (showOffsetSlider) {
+        Spacer(Modifier.height(16.dp))
+        Slider(
+            value = offset,
+            onValueChange = { offset = it },
+            valueRange = -3000f..3000f,
+            onValueChangeFinished = { prefs.lyricOffset = offset.toInt() },
+            colors = SliderDefaults.colors(thumbColor = GREEN, activeTrackColor = GREEN)
+        )
+        Text("当前: ${prefs.lyricOffset}ms", color = DIM, fontSize = 12.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
     }
 }
 
-// ---------- 歌词源选择弹窗（含搜索） ----------
+// ---------- 歌词源选择：底部滑入面板 ----------
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SourceSelectDialog(
+private fun ColumnScope.SourceSelectContent(
     sources: List<LyricSource>,
     currentSource: String,
+    isRefreshing: Boolean,
     onSelect: (LyricSource) -> Unit,
-    onDismiss: () -> Unit
+    onRefresh: () -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var isSearching by remember { mutableStateOf(false) }
     var searchResults by remember { mutableStateOf<List<SearchResultItem>>(emptyList()) }
     var showSearch by remember { mutableStateOf(false) }
 
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth(0.9f)
-                .fillMaxHeight(0.8f),
-            colors = CardDefaults.cardColors(containerColor = DARKER.copy(alpha = 0.98f))
-        ) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                // 标题
+    Text(if (showSearch) "搜索歌词" else "切换歌词", color = WHITE, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+
+            if (showSearch) {
+                // 搜索模式
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(if (showSearch) "搜索歌词" else "选择歌词源", color = WHITE, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                    TextButton(onClick = onDismiss) {
-                        Text("关闭", color = GREEN, fontSize = 14.sp)
-                    }
-                }
-                
-                Spacer(Modifier.height(12.dp))
-                
-                if (showSearch) {
-                    // 搜索模式
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            placeholder = { Text("输入歌曲名搜索...", color = DIM) },
-                            modifier = Modifier.weight(1f),
-                            textStyle = LocalTextStyle.current.copy(color = WHITE, fontSize = 15.sp),
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = GREEN,
-                                unfocusedBorderColor = DIM,
-                                focusedContainerColor = DARK,
-                                unfocusedContainerColor = DARK
-                            )
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = { Text("输入歌曲名搜索...", color = DIM) },
+                        modifier = Modifier.weight(1f),
+                        textStyle = LocalTextStyle.current.copy(color = WHITE, fontSize = 15.sp),
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = GREEN,
+                            unfocusedBorderColor = DIM,
+                            focusedContainerColor = DARK,
+                            unfocusedContainerColor = DARK
                         )
-                        Button(
-                            onClick = {
-                                isSearching = true
-                                searchResults = emptyList()
-                                kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
-                                    val results = mutableListOf<SearchResultItem>()
-                                    // QQ音乐
-                                    try {
-                                        val qqTracks = QQMusicApi.search(searchQuery)
-                                        qqTracks.forEach { track ->
-                                            results.add(SearchResultItem(track, "QQ音乐"))
-                                        }
-                                    } catch (_: Exception) {}
-                                    // 网易云
-                                    try {
-                                        val neTracks = NeteaseApi.search(searchQuery)
-                                        neTracks.forEach { track ->
-                                            results.add(SearchResultItem(track, "网易云"))
-                                        }
-                                    } catch (_: Exception) {}
-                                    with(kotlinx.coroutines.Dispatchers.Main) {
-                                        searchResults = results
-                                        isSearching = false
-                                    }
-                                }
-                            },
-                            enabled = !isSearching && searchQuery.isNotBlank(),
-                            colors = ButtonDefaults.buttonColors(containerColor = GREEN)
-                        ) {
-                            if (isSearching) {
-                                CircularProgressIndicator(modifier = Modifier.size(18.dp), color = WHITE, strokeWidth = 2.dp)
-                            } else {
-                                Text("搜索", fontSize = 13.sp)
-                            }
-                        }
-                    }
-                    
-                    Spacer(Modifier.height(12.dp))
-                    
-                    // 搜索结果列表
-                    LazyColumn(modifier = Modifier.weight(1f)) {
-                        if (searchResults.isNotEmpty()) {
-                            items(searchResults.size) { index ->
-                                val result = searchResults[index]
-                                SearchResultRow(
-                                    result = result,
-                                    onClick = {
-                                        kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
-                                            try {
-                                                val lines = when (result.source) {
-                                                    "QQ音乐" -> {
-                                                        val (raw, trans) = QQMusicApi.getLyrics(result.track.id)
-                                                        LyricsAggregator.parseQQForSearch(raw, trans)
-                                                    }
-                                                    else -> {
-                                                        val (lrc, yrc, trans) = NeteaseApi.getLyrics(result.track.id)
-                                                        if (!yrc.isNullOrBlank()) {
-                                                            Parsers.parseWordLyrics(yrc).let { Parsers.mergeTranslation(it, trans) }
-                                                        } else {
-                                                            Parsers.parseLrc(lrc).let { Parsers.mergeTranslation(it, trans) }
-                                                        }
-                                                    }
-                                                }
-                                                if (lines.isNotEmpty()) {
-                                                    with(kotlinx.coroutines.Dispatchers.Main) {
-                                                        onSelect(LyricSource(result.track, "${result.source} · ${result.track.title}", lines))
-                                                    }
-                                                }
-                                            } catch (_: Exception) {}
-                                        }
-                                    }
-                                )
-                            }
-                        } else if (!isSearching && searchQuery.isNotBlank()) {
-                            item {
-                                Text("未找到结果", color = DIM, fontSize = 14.sp, modifier = Modifier.padding(top = 20.dp))
-                            }
-                        }
-                    }
-                    
-                    TextButton(
-                        onClick = { showSearch = false },
-                        modifier = Modifier.align(Alignment.CenterHorizontally)
-                    ) {
-                        Text("返回源列表", color = GREEN, fontSize = 13.sp)
-                    }
-                } else {
-                    // 源列表模式
-                    if (sources.isEmpty()) {
-                        Text("未找到歌词", color = DIM, fontSize = 14.sp)
-                    } else {
-                        LazyColumn(modifier = Modifier.weight(1f)) {
-                            items(sources.size) { index ->
-                                val source = sources[index]
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { onSelect(source) }
-                                        .padding(vertical = 12.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        source.source,
-                                        color = if (source.source == currentSource) GREEN else WHITE,
-                                        fontSize = 16.sp
-                                    )
-                                    if (source.source == currentSource) {
-                                        Icon(Icons.Filled.Check, contentDescription = null, tint = GREEN, modifier = Modifier.size(20.dp))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
-                    Spacer(Modifier.height(8.dp))
-                    
+                    )
                     Button(
-                        onClick = { showSearch = true },
-                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            isSearching = true
+                            searchResults = emptyList()
+                            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+                                val results = mutableListOf<SearchResultItem>()
+                                try {
+                                    QQMusicApi.search(searchQuery).forEach { results.add(SearchResultItem(it, "QQ音乐")) }
+                                } catch (_: Exception) {}
+                                try {
+                                    NeteaseApi.search(searchQuery).forEach { results.add(SearchResultItem(it, "网易云")) }
+                                } catch (_: Exception) {}
+                                try {
+                                    AppleMusicApi.search(AppleMusicApi.appContext, searchQuery).forEach { rec ->
+                                        results.add(SearchResultItem(Track(rec.id, rec.title, rec.artists, rec.album, 0), "Apple Music"))
+                                    }
+                                } catch (_: Exception) {}
+                                with(kotlinx.coroutines.Dispatchers.Main) {
+                                    searchResults = results
+                                    isSearching = false
+                                }
+                            }
+                        },
+                        enabled = !isSearching && searchQuery.isNotBlank(),
                         colors = ButtonDefaults.buttonColors(containerColor = GREEN)
                     ) {
-                        Icon(Icons.Filled.Search, contentDescription = null, tint = WHITE, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("搜索其他歌词", fontSize = 14.sp)
+                        if (isSearching) CircularProgressIndicator(modifier = Modifier.size(18.dp), color = WHITE, strokeWidth = 2.dp)
+                        else Text("搜索", fontSize = 13.sp)
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                LazyColumn(modifier = Modifier.weight(1f, fill = false).height(400.dp)) {
+                    items(searchResults.size) { index ->
+                        val result = searchResults[index]
+                        SearchResultRow(result) {
+                            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+                                try {
+                                    val lines = when (result.source) {
+                                        "QQ音乐" -> {
+                                            val (raw, trans, roma) = QQMusicApi.getLyrics(result.track.id)
+                                            LyricsAggregator.parseQQForSearch(raw, trans, roma)
+                                        }
+                                        else -> {
+                                            val (lrc, yrc, trans) = NeteaseApi.getLyrics(result.track.id)
+                                            if (!yrc.isNullOrBlank()) Parsers.parseWordLyrics(yrc).let { Parsers.mergeTranslation(it, trans) }
+                                            else Parsers.parseLrc(lrc).let { Parsers.mergeTranslation(it, trans) }
+                                        }
+                                    }
+                                    if (lines.isNotEmpty()) {
+                                        with(kotlinx.coroutines.Dispatchers.Main) {
+                                            onSelect(LyricSource(result.track, "${result.source} · ${result.track.title}", lines))
+                                        }
+                                    }
+                                } catch (_: Exception) {}
+                            }
+                        }
+                    }
+                }
+
+                TextButton(onClick = { showSearch = false }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text("返回自动结果", color = GREEN, fontSize = 13.sp)
+                }
+            } else {
+                // 自动搜索结果列表
+                if (sources.isEmpty()) {
+                    Text("未找到歌词", color = DIM, fontSize = 14.sp)
+                } else {
+                    Text("自动找到 ${sources.size} 个版本：", color = GRAY, fontSize = 12.sp)
+                    Spacer(Modifier.height(8.dp))
+                    LazyColumn(modifier = Modifier.weight(1f, fill = false).height(400.dp)) {
+                        items(sources.size) { index ->
+                            val source = sources[index]
+                            val isCurrent = "${source.source} · ${source.track.title}" == currentSource
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onSelect(source) }
+                                    .padding(vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(if (source.source == "QQ音乐") Color(0xFF31C27C) else Color(0xFFDD001B))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(source.source, color = WHITE, fontSize = 10.sp)
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        source.track.title,
+                                        color = if (isCurrent) GREEN else WHITE,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        "${source.track.artists.joinToString(", ")} · ${source.track.album}",
+                                        color = GRAY, fontSize = 12.sp,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                if (isCurrent) {
+                                    Icon(Icons.Filled.Check, contentDescription = null, tint = GREEN, modifier = Modifier.size(20.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = onRefresh,
+                        enabled = !isRefreshing,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = DARK)
+                    ) {
+                        if (isRefreshing) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = GREEN, strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Filled.Refresh, contentDescription = null, tint = GREEN, modifier = Modifier.size(18.dp))
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        Text("重新搜索", color = GREEN, fontSize = 14.sp)
+                    }
+                    Button(
+                        onClick = { showSearch = true },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = DARK)
+                    ) {
+                        Icon(Icons.Filled.Search, contentDescription = null, tint = GREEN, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("手动搜索", color = GREEN, fontSize = 14.sp)
                     }
                 }
             }
-        }
-    }
 }
 
 // 搜索结果行
@@ -836,25 +1087,12 @@ private fun SearchResultRow(
             modifier = Modifier
                 .size(8.dp)
                 .clip(RoundedCornerShape(4.dp))
-                .background(GREEN)
+                .background(if (result.source == "QQ音乐") Color(0xFF31C27C) else Color(0xFFDD001B))
         )
         Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                result.track.title,
-                color = WHITE,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                "${result.track.artists.joinToString(", ")} · ${result.track.album}",
-                color = GRAY,
-                fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Text(result.track.title, color = WHITE, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("${result.track.artists.joinToString(", ")} · ${result.track.album}", color = GRAY, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Text(result.source, color = DIM, fontSize = 11.sp)
     }
@@ -866,348 +1104,84 @@ data class SearchResultItem(
     val source: String
 )
 
-// ---------- 播放列表弹窗 ----------
+// ---------- 播放队列：正在播放列表 ----------
 @Composable
-private fun PlaylistDialog(
-    onDismiss: () -> Unit,
+private fun ColumnScope.QueueContent(
+    currentTrack: Track?,
     onPlayTrack: (String) -> Unit
 ) {
-    var playlists by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
-    var selectedPlaylist by remember { mutableStateOf<String?>(null) }
-    var playlistTracks by remember { mutableStateOf<List<Track>>(emptyList()) }
+    var queue by remember { mutableStateOf<List<Track>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
-        loading = true
         withIO {
             try {
                 val token = SpotifyAuth.accessToken() ?: return@withIO
-                playlists = SpotifyApi.getUserPlaylists(token)
+                val (_, items) = SpotifyApi.getQueue(token)
+                queue = items
             } catch (_: Exception) {}
         }
         loading = false
     }
 
-    LaunchedEffect(selectedPlaylist) {
-        if (selectedPlaylist != null) {
-            withIO {
-                try {
-                    val token = SpotifyAuth.accessToken() ?: return@withIO
-                    playlistTracks = SpotifyApi.getPlaylistTracks(token, selectedPlaylist!!)
-                } catch (_: Exception) {}
-            }
-        }
+    Text("正在播放", color = WHITE, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+    Spacer(Modifier.height(12.dp))
+
+    if (loading) {
+        Text("加载中...", color = DIM, fontSize = 14.sp)
+        return
     }
 
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            modifier = Modifier.fillMaxWidth(0.85f).fillMaxHeight(0.7f),
-            colors = CardDefaults.cardColors(containerColor = DARKER.copy(alpha = 0.95f))
-        ) {
-            Column(modifier = Modifier.padding(20.dp)) {
+    LazyColumn(modifier = Modifier.weight(1f)) {
+        if (currentTrack != null) {
+            item {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(GREEN.copy(alpha = 0.15f))
+                        .padding(vertical = 10.dp, horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("播放列表", color = WHITE, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                    if (selectedPlaylist != null) {
-                        TextButton(onClick = { selectedPlaylist = null }) {
-                            Text("返回", color = GREEN)
-                        }
-                    }
-                }
-                Spacer(Modifier.height(16.dp))
-
-                if (loading) {
-                    Text("加载中...", color = DIM, fontSize = 14.sp)
-                } else if (selectedPlaylist == null) {
-                    // 显示播放列表
-                    if (playlists.isEmpty()) {
-                        Text("未找到播放列表", color = DIM, fontSize = 14.sp)
-                    } else {
-                        LazyColumn {
-                            items(playlists.size) { index ->
-                                val (name, id) = playlists[index]
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { selectedPlaylist = id }
-                                        .padding(vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Filled.QueueMusic, contentDescription = null, tint = WHITE, modifier = Modifier.size(24.dp))
-                                    Spacer(Modifier.width(12.dp))
-                                    Text(name, color = WHITE, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // 显示播放列表歌曲
-                    LazyColumn {
-                        items(playlistTracks.size) { index ->
-                            val track = playlistTracks[index]
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { onPlayTrack(track.id) }
-                                    .padding(vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(track.title, color = WHITE, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text(track.artists.joinToString(", "), color = GRAY, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                }
-                                Icon(Icons.Filled.PlayArrow, contentDescription = "播放", tint = WHITE, modifier = Modifier.size(20.dp))
-                            }
-                        }
-                    }
-                }
-
-                Spacer(Modifier.height(16.dp))
-                TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) {
-                    Text("关闭", color = GREEN)
-                }
-            }
-        }
-    }
-}
-
-// ---------- 歌词搜索弹窗 ----------
-@Composable
-private fun LyricsSearchDialog(
-    currentTrack: Track?,
-    onSelectLyrics: (List<Line>, String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var searchQuery by remember { mutableStateOf(currentTrack?.let { "${it.title} ${it.artists.firstOrNull() ?: ""}" } ?: "") }
-    var isSearching by remember { mutableStateOf(false) }
-    var qqResults by remember { mutableStateOf<List<SearchResult>>(emptyList()) }
-    var neteaseResults by remember { mutableStateOf<List<SearchResult>>(emptyList()) }
-    
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth(0.9f)
-                .fillMaxHeight(0.8f),
-            colors = CardDefaults.cardColors(containerColor = DARKER.copy(alpha = 0.98f))
-        ) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                // 标题栏
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("搜索歌词", color = WHITE, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                    TextButton(onClick = onDismiss) {
-                        Text("关闭", color = GREEN, fontSize = 14.sp)
-                    }
-                }
-                
-                Spacer(Modifier.height(16.dp))
-                
-                // 搜索框
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        placeholder = { Text("搜索歌曲...", color = DIM) },
-                        modifier = Modifier.weight(1f),
-                        textStyle = LocalTextStyle.current.copy(color = WHITE, fontSize = 16.sp),
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = GREEN,
-                            unfocusedBorderColor = DIM,
-                            focusedContainerColor = DARK,
-                            unfocusedContainerColor = DARK
-                        )
-                    )
-                    Button(
-                        onClick = {
-                            isSearching = true
-                            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
-                                // 搜索QQ音乐
-                                try {
-                                    val qqTracks = QQMusicApi.search(searchQuery)
-                                    val qqItems = qqTracks.map { track ->
-                                        SearchResult(
-                                            track = track,
-                                            source = "QQ音乐",
-                                            hasLyrics = true
-                                        )
-                                    }
-                                    with(kotlinx.coroutines.Dispatchers.Main) {
-                                        qqResults = qqItems
-                                    }
-                                } catch (_: Exception) {}
-                                
-                                // 搜索网易云
-                                try {
-                                    val neTracks = NeteaseApi.search(searchQuery)
-                                    val neItems = neTracks.map { track ->
-                                        SearchResult(
-                                            track = track,
-                                            source = "网易云",
-                                            hasLyrics = true
-                                        )
-                                    }
-                                    with(kotlinx.coroutines.Dispatchers.Main) {
-                                        neteaseResults = neItems
-                                    }
-                                } catch (_: Exception) {}
-                                
-                                with(kotlinx.coroutines.Dispatchers.Main) {
-                                    isSearching = false
-                                }
-                            }
-                        },
-                        enabled = !isSearching && searchQuery.isNotBlank(),
-                        colors = ButtonDefaults.buttonColors(containerColor = GREEN)
-                    ) {
-                        if (isSearching) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), color = WHITE, strokeWidth = 2.dp)
-                        } else {
-                            Text("搜索", fontSize = 14.sp)
-                        }
-                    }
-                }
-                
-                Spacer(Modifier.height(16.dp))
-                
-                // 搜索结果列表
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // QQ音乐结果
-                    if (qqResults.isNotEmpty()) {
-                        item {
-                            Text("QQ音乐", color = GREEN, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                        }
-                        items(qqResults) { result ->
-                            SearchResultItem(
-                                result = result,
-                                onClick = {
-                                    kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
-                                        try {
-                                            val (raw, trans) = QQMusicApi.getLyrics(result.track.id)
-                                            val lines = LyricsAggregator.parseQQForSearch(raw, trans)
-                                            if (lines.isNotEmpty()) {
-                                                with(kotlinx.coroutines.Dispatchers.Main) {
-                                                    onSelectLyrics(lines, "QQ音乐 · ${result.track.title}")
-                                                }
-                                            }
-                                        } catch (_: Exception) {}
-                                    }
-                                }
-                            )
-                        }
-                    }
-                    
-                    // 网易云结果
-                    if (neteaseResults.isNotEmpty()) {
-                        item {
-                            Spacer(Modifier.height(8.dp))
-                            Text("网易云音乐", color = GREEN, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                        }
-                        items(neteaseResults) { result ->
-                            SearchResultItem(
-                                result = result,
-                                onClick = {
-                                    kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
-                                        try {
-                                            val (lrc, yrc, trans) = NeteaseApi.getLyrics(result.track.id)
-                                            val lines = if (!yrc.isNullOrBlank()) {
-                                                Parsers.parseWordLyrics(yrc).let { 
-                                                    Parsers.mergeTranslation(it, trans) 
-                                                }
-                                            } else {
-                                                Parsers.parseLrc(lrc).let { 
-                                                    Parsers.mergeTranslation(it, trans) 
-                                                }
-                                            }
-                                            if (lines.isNotEmpty()) {
-                                                with(kotlinx.coroutines.Dispatchers.Main) {
-                                                    onSelectLyrics(lines, "网易云 · ${result.track.title}")
-                                                }
-                                            }
-                                        } catch (_: Exception) {}
-                                    }
-                                }
-                            )
-                        }
-                    }
-                    
-                    if (!isSearching && qqResults.isEmpty() && neteaseResults.isEmpty() && searchQuery.isNotBlank()) {
-                        item {
-                            Text("未找到结果", color = DIM, fontSize = 14.sp, modifier = Modifier.padding(top = 20.dp))
-                        }
+                    Icon(Icons.Filled.GraphicEq, contentDescription = null, tint = GREEN, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(currentTrack.title, color = GREEN, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(currentTrack.artists.joinToString(", "), color = GRAY, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
         }
-    }
-}
-
-// 搜索结果项
-@Composable
-private fun SearchResultItem(
-    result: SearchResult,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
-            .padding(vertical = 12.dp, horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // 状态指示点
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .clip(RoundedCornerShape(4.dp))
-                .background(if (result.hasLyrics) GREEN else Color.Red)
-        )
-        Spacer(Modifier.width(12.dp))
-        
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                result.track.title,
-                color = WHITE,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                "${result.track.artists.joinToString(", ")} · ${result.track.album}",
-                color = GRAY,
-                fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+        if (queue.isNotEmpty()) {
+            item {
+                Spacer(Modifier.height(12.dp))
+                Text("待播 " + queue.size + " 首", color = DIM, fontSize = 12.sp)
+                Spacer(Modifier.height(4.dp))
+            }
+            items(queue.size) { index ->
+                val track = queue[index]
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .focusHighlight()
+                        .clickable { onPlayTrack(track.id) }
+                        .padding(vertical = 10.dp, horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text((index + 1).toString(), color = DIM, fontSize = 12.sp, modifier = Modifier.width(28.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(track.title, color = WHITE, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(track.artists.joinToString(", "), color = GRAY, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Icon(Icons.Filled.PlayArrow, contentDescription = "播放", tint = DIM, modifier = Modifier.size(20.dp))
+                }
+            }
         }
-        
-        Text(
-            result.source,
-            color = DIM,
-            fontSize = 11.sp
-        )
+        if (currentTrack == null && queue.isEmpty()) {
+            item { Text("队列为空", color = DIM, fontSize = 14.sp) }
+        }
     }
 }
-
-// 搜索结果数据类
-data class SearchResult(
-    val track: Track,
-    val source: String,
-    val hasLyrics: Boolean
-)
 
 private suspend fun <T> withIO(block: () -> T): T = kotlinx.coroutines.withContext(Dispatchers.IO) { block() }

@@ -1,5 +1,9 @@
 package com.tvlyrics.app
 
+import com.tvlyrics.app.codec.Parsers
+import com.tvlyrics.app.codec.QrcDecrypt
+import com.tvlyrics.app.domain.Line
+
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -29,6 +33,15 @@ class ParsersTest {
         assertEquals("世界", words[1].text)
         assertEquals(2734, words[1].endMs) // 1734+1000
         assertEquals(3234, lines[0].endMs)
+    }
+
+    @Test
+    fun `qrc 英文歌词保留词间空格`() {
+        // 真实 QRC 格式：空格是独立带时间词
+        val qrc = "[1000,2000]Counting(0,13) (13,13)Stars(26,13) (39,13)OneRepublic(78,13)"
+        val lines = Parsers.parseWordLyrics(qrc)
+        assertEquals(1, lines.size)
+        assertEquals("Counting Stars OneRepublic", lines[0].text)
     }
 
     @Test

@@ -1,4 +1,4 @@
-package com.tvlyrics.app
+package com.tvlyrics.app.provider
 
 import android.content.Context
 import android.content.SharedPreferences

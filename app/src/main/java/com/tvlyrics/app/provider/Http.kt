@@ -1,4 +1,4 @@
-package com.tvlyrics.app
+package com.tvlyrics.app.provider
 
 import java.io.IOException
 import java.net.HttpURLConnection

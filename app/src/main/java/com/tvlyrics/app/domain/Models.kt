@@ -1,4 +1,4 @@
-package com.tvlyrics.app
+package com.tvlyrics.app.domain
 
 data class Track(
     val id: String,
@@ -21,6 +21,7 @@ data class Line(
     val text: String,
     val words: List<Word>?,
     val translation: String? = null,
+    val romanization: String? = null,
 )
 
 data class Lyrics(
