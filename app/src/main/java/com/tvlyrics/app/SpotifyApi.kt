@@ -49,12 +49,126 @@ object SpotifyApi {
         val artists = item.optJSONArray("artists")?.let { a ->
             (0 until a.length()).map { a.getJSONObject(it).optString("name") }
         } ?: emptyList()
+        val album = item.optJSONObject("album")
+        val albumArtUrl = album?.optJSONArray("images")?.let { imgs ->
+            if (imgs.length() > 0) imgs.getJSONObject(0).optString("url") else null
+        }
         return Track(
             id = item.optString("id"),
             title = item.optString("name"),
             artists = artists,
-            album = item.optJSONObject("album")?.optString("name") ?: "",
+            album = album?.optString("name") ?: "",
             durationMs = item.optLong("duration_ms"),
+            albumArtUrl = albumArtUrl,
+        )
+    }
+
+    // 收藏歌曲
+    fun likeTrack(accessToken: String, trackId: String) {
+        Http.put(
+            "https://api.spotify.com/v1/me/tracks?ids=$trackId",
+            "",
+            mapOf("Authorization" to "Bearer $accessToken", "Content-Length" to "0")
+        )
+    }
+
+    // 取消收藏
+    fun unlikeTrack(accessToken: String, trackId: String) {
+        Http.delete(
+            "https://api.spotify.com/v1/me/tracks?ids=$trackId",
+            mapOf("Authorization" to "Bearer $accessToken")
+        )
+    }
+
+    // 检查是否已收藏
+    fun isLiked(accessToken: String, trackId: String): Boolean {
+        val resp = Http.get(
+            "https://api.spotify.com/v1/me/tracks?ids=$trackId",
+            mapOf("Authorization" to "Bearer $accessToken")
+        )
+        if (resp.code != 200) return false
+        val obj = JSONObject(resp.body)
+        return obj.optJSONArray("tracks")?.let { it.length() > 0 && !it.isNull(0) } ?: false
+    }
+
+    // 切换收藏状态
+    fun toggleLike(accessToken: String, trackId: String): Boolean {
+        val liked = isLiked(accessToken, trackId)
+        if (liked) unlikeTrack(accessToken, trackId) else likeTrack(accessToken, trackId)
+        return !liked
+    }
+
+    // 暂停播放
+    fun pause(accessToken: String) {
+        Http.put(
+            "https://api.spotify.com/v1/me/player/pause",
+            "",
+            mapOf("Authorization" to "Bearer $accessToken")
+        )
+    }
+
+    // 继续播放
+    fun resume(accessToken: String) {
+        Http.put(
+            "https://api.spotify.com/v1/me/player/play",
+            "",
+            mapOf("Authorization" to "Bearer $accessToken")
+        )
+    }
+
+    // 获取用户播放列表
+    fun getUserPlaylists(accessToken: String): List<Pair<String, String>> {
+        val resp = Http.get(
+            "https://api.spotify.com/v1/me/playlists?limit=20",
+            mapOf("Authorization" to "Bearer $accessToken")
+        )
+        if (resp.code != 200) return emptyList()
+        val obj = JSONObject(resp.body)
+        val items = obj.optJSONArray("items") ?: return emptyList()
+        return (0 until items.length()).map { i ->
+            val p = items.getJSONObject(i)
+            p.optString("name") to p.optString("id")
+        }
+    }
+
+    // 获取播放列表的歌曲
+    fun getPlaylistTracks(accessToken: String, playlistId: String): List<Track> {
+        val resp = Http.get(
+            "https://api.spotify.com/v1/playlists/$playlistId/tracks?limit=50",
+            mapOf("Authorization" to "Bearer $accessToken")
+        )
+        if (resp.code != 200) return emptyList()
+        val obj = JSONObject(resp.body)
+        val items = obj.optJSONArray("items") ?: return emptyList()
+        val tracks = mutableListOf<Track>()
+        for (i in 0 until items.length()) {
+            val item = items.getJSONObject(i).optJSONObject("track") ?: continue
+            if (item.optString("type") != "track") continue
+            val artists = item.optJSONArray("artists")?.let { a ->
+                (0 until a.length()).map { a.getJSONObject(it).optString("name") }
+            } ?: emptyList()
+            val album = item.optJSONObject("album")
+            val albumArtUrl = album?.optJSONArray("images")?.let { imgs ->
+                if (imgs.length() > 0) imgs.getJSONObject(0).optString("url") else null
+            }
+            tracks.add(Track(
+                id = item.optString("id"),
+                title = item.optString("name"),
+                artists = artists,
+                album = album?.optString("name") ?: "",
+                durationMs = item.optLong("duration_ms"),
+                albumArtUrl = albumArtUrl,
+            ))
+        }
+        return tracks
+    }
+
+    // 播放指定歌曲（通过添加到队列）
+    fun playTrack(accessToken: String, trackUri: String) {
+        Http.postJson(
+            "https://api.spotify.com/v1/me/player/queue?uri=$trackUri",
+            "",
+            mapOf("Authorization" to "Bearer $accessToken")
         )
     }
 }

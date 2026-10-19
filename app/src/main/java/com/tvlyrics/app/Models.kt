@@ -6,6 +6,7 @@ data class Track(
     val artists: List<String>,
     val album: String,
     val durationMs: Long,
+    val albumArtUrl: String? = null,
 )
 
 data class Word(

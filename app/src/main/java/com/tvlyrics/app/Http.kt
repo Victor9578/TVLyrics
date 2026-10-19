@@ -16,6 +16,12 @@ object Http {
     fun postJson(url: String, json: String, headers: Map<String, String> = emptyMap()): Response =
         request("POST", url, json.toByteArray(Charsets.UTF_8), "application/json", headers)
 
+    fun put(url: String, body: String, headers: Map<String, String> = emptyMap()): Response =
+        request("PUT", url, body.toByteArray(Charsets.UTF_8), "application/json", headers)
+
+    fun delete(url: String, headers: Map<String, String> = emptyMap()): Response =
+        request("DELETE", url, null, null, headers)
+
     fun postForm(url: String, form: Map<String, String>, headers: Map<String, String> = emptyMap()): String =
         request("POST", url, encodeForm(form), "application/x-www-form-urlencoded", headers).body
 
