@@ -349,58 +349,50 @@ private fun LyricsScreen(prefs: AppPrefs) {
     Box(modifier = Modifier.fillMaxSize()) {
         if (track?.albumArtUrl != null) {
             if (isLandscape) {
-                // ===== 定版：清晰全屏底 + 左侧45%清晰封面 + 从封面60%向右 blur(92dp)+晕染 =====
-                // ① 封面图 Crop 全屏（清晰底层）
+                // ===== V6：全屏模糊背景 + 左侧45%封面右缘羽化 + 氛围晕染 =====
+                // ① 全屏模糊背景（同图模糊延伸，无裁剪接缝）
                 AsyncImage(
                     model = track.albumArtUrl,
                     contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().blur(d.blur * 1.5f),
                     contentScale = ContentScale.Crop,
                 )
-                // ② 左侧封面层 45% Crop 填充（保证左侧绝对清晰）
-                AsyncImage(
-                    model = track.albumArtUrl,
-                    contentDescription = "专辑封面",
+                // ② 左侧封面层（固定 45% 宽，右边缘从 60% 处 DstIn 羽化融入模糊）
+                Box(
                     modifier = Modifier
                         .fillMaxHeight()
                         .fillMaxWidth(0.45f)
-                        .align(Alignment.CenterStart),
-                    contentScale = ContentScale.Crop,
-                )
-                // ③ 模糊层：从封面 60%（屏宽 27%）向右渐显 blur(92dp)
-                AsyncImage(
-                    model = track.albumArtUrl,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .blur(d.blur * 1.5f)
-                        .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
-                        .drawWithContent {
-                            drawContent()
-                            // DstIn：封面 60% 前（屏 27%）完全透明露清晰图，向右渐显
-                            drawRect(
-                                brush = Brush.horizontalGradient(
-                                    colorStops = arrayOf(
-                                        0.0f to Color.Transparent,
-                                        0.27f to Color.Transparent,
-                                        0.50f to Color.Black,
-                                        1.0f to Color.Black,
-                                    )
-                                ),
-                                blendMode = BlendMode.DstIn,
-                            )
-                        },
-                    contentScale = ContentScale.Crop,
-                )
-                // ④ 氛围晕染渐变（与模糊同步，从屏 27% 向右加深，保歌词可读）
+                        .align(Alignment.CenterStart)
+                ) {
+                    AsyncImage(
+                        model = track.albumArtUrl,
+                        contentDescription = "专辑封面",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+                            .drawWithContent {
+                                drawContent()
+                                // 右边缘羽化：从 60% 处开始淡出，融入下方模糊
+                                drawRect(
+                                    brush = Brush.horizontalGradient(
+                                        colors = listOf(Color.Black, Color.Transparent),
+                                        startX = size.width * 0.6f,
+                                        endX = size.width,
+                                    ),
+                                    blendMode = BlendMode.DstIn,
+                                )
+                            },
+                        contentScale = ContentScale.Crop,
+                    )
+                }
+                // ③ 氛围晕染渐变（保歌词可读，纹理透出）
                 Box(
                     modifier = Modifier.fillMaxSize().background(
                         Brush.horizontalGradient(
                             colorStops = arrayOf(
                                 0.0f to Color.Transparent,
-                                0.27f to Color.Transparent,
-                                0.50f to baseColor.copy(alpha = 0.25f),
-                                0.75f to baseColor.copy(alpha = 0.55f),
+                                0.4f to baseColor.copy(alpha = 0.25f),
+                                0.7f to baseColor.copy(alpha = 0.55f),
                                 1.0f to baseColor.copy(alpha = 0.65f),
                             )
                         )
