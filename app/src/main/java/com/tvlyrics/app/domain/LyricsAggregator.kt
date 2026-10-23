@@ -41,13 +41,18 @@ object LyricsAggregator {
             }
         } catch (e: Exception) { Log.e("TVLyrics", "AMLL fail", e) }
 
-        // 1. QQ 音乐 - "歌名 歌手"搜不到时降级用纯歌名再搜（QQ 限流会间歇性返回空，减少重试次数避免加重限流）
+        // 1. QQ 音乐 - 三级重试：关键词→纯歌名→延迟2.5秒再试（风控是瞬断，等一下就恢复）
         try {
             var results = QQMusicApi.search(keyword)
             Log.d("TVLyrics", "QQ search results: ${results.size} for '$keyword'")
             if (results.isEmpty()) {
                 results = QQMusicApi.search(track.title)
                 Log.d("TVLyrics", "QQ retry with title only: ${results.size}")
+            }
+            if (results.isEmpty()) {
+                Thread.sleep(2500) // 风控瞬断：等 2.5s 再试一次
+                results = QQMusicApi.search(keyword)
+                Log.d("TVLyrics", "QQ retry after delay: ${results.size}")
             }
             var fetched = 0
             for (candidate in results) {

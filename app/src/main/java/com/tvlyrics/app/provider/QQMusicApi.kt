@@ -31,7 +31,9 @@ object QQMusicApi {
             .put("method", "DoSearchForQQMusicDesktop")
             .put("module", "music.search.SearchCgiService")
             .put("param", param)
-        val body = JSONObject().put("req_1", req).toString()
+        // comm 字段模拟官方客户端，降低风控拦截率（参考 SPW-MultiLyrics）
+        val comm = JSONObject().put("ct", "19").put("cv", "1859")
+        val body = JSONObject().put("req_1", req).put("comm", comm).toString()
         val resp = Http.postJson(SEARCH, body, headers)
         val list = JSONObject(resp.body).optJSONObject("req_1")?.optJSONObject("data")?.optJSONObject("body")
             ?.optJSONObject("song")?.optJSONArray("list") ?: return emptyList()
