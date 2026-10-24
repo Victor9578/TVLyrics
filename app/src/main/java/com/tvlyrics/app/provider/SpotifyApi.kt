@@ -118,6 +118,24 @@ object SpotifyApi {
         )
     }
 
+    // 下一首
+    fun next(accessToken: String) {
+        Http.postJson(
+            "https://api.spotify.com/v1/me/player/next",
+            "",
+            mapOf("Authorization" to "Bearer $accessToken")
+        )
+    }
+
+    // 上一首
+    fun previous(accessToken: String) {
+        Http.postJson(
+            "https://api.spotify.com/v1/me/player/previous",
+            "",
+            mapOf("Authorization" to "Bearer $accessToken")
+        )
+    }
+
     // 获取正在播放的队列（含当前播放 + 待播列表）
     fun getQueue(accessToken: String): Pair<Track?, List<Track>> {
         val resp = Http.get(
@@ -183,11 +201,29 @@ object SpotifyApi {
     }
 
     // 播放指定歌曲（通过添加到队列）
+    // 播放指定歌曲且保留原队列：加到队列末尾 + 跳到下一首（即刚加的这首）
+    // 直接 PUT /play+uris 会替换整个队列上下文，导致后续无歌可播
     fun playTrack(accessToken: String, trackUri: String) {
-        Http.postJson(
-            "https://api.spotify.com/v1/me/player/queue?uri=$trackUri",
-            "",
-            mapOf("Authorization" to "Bearer $accessToken")
-        )
+        try {
+            Http.postJson(
+                "https://api.spotify.com/v1/me/player/queue?uri=$trackUri",
+                "",
+                mapOf("Authorization" to "Bearer $accessToken")
+            )
+            Http.postJson(
+                "https://api.spotify.com/v1/me/player/next",
+                "",
+                mapOf("Authorization" to "Bearer $accessToken")
+            )
+        } catch (e: Exception) {
+            // 队列接口失败时回退：直接播放
+            try {
+                Http.put(
+                    "https://api.spotify.com/v1/me/player/play",
+                    "{\"uris\":[\"$trackUri\"]}",
+                    mapOf("Authorization" to "Bearer $accessToken")
+                )
+            } catch (_: Exception) {}
+        }
     }
 }

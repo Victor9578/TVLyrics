@@ -14,7 +14,7 @@ object Http {
         request("GET", url, null, null, headers)
 
     fun postJson(url: String, json: String, headers: Map<String, String> = emptyMap()): Response =
-        request("POST", url, json.toByteArray(Charsets.UTF_8), "application/json", headers)
+        request("POST", url, json.toByteArray(Charsets.UTF_8), "application/json; charset=utf-8", headers)
 
     fun put(url: String, body: String, headers: Map<String, String> = emptyMap()): Response =
         request("PUT", url, body.toByteArray(Charsets.UTF_8), "application/json", headers)
@@ -45,7 +45,8 @@ object Http {
         val stream = if (code in 200..299) conn.inputStream else conn.errorStream
         val respBody = try { stream?.bufferedReader()?.use { it.readText() } ?: "" } catch (e: IOException) { "" }
         val retryAfter = conn.getHeaderField("Retry-After")?.toLongOrNull()?.times(1000)
-        conn.disconnect()
+        // 不 disconnect：保留连接让 HttpURLConnection 内部池复用（keep-alive），
+        // 避免每次请求新建 TLS 连接触发 QQ 风控（Python requests 同款行为）
         if (code !in 200..299) throw HttpException(code, respBody, retryAfter)
         return Response(code, respBody)
     }

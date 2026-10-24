@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp" android:height="108dp"
-    android:viewportWidth="108" android:viewportHeight="108">
-    <!-- 白色音符（前景，居中安全区内） -->
-    <path android:fillColor="#FFFFFFFF" android:pathData="M46,70V42l24,-5.5v28"/>
-    <path android:fillColor="#FFFFFFFF" android:pathData="M46,70m-7.5,0a7.5,7.5 0,1 1,15 0a7.5,7.5 0,1 1,-15 0"/>
-    <path android:fillColor="#FFFFFFFF" android:pathData="M70,64.5m-7.5,0a7.5,7.5 0,1 1,15 0a7.5,7.5 0,1 1,-15 0"/>
-</vector>

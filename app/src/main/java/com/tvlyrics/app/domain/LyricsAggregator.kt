@@ -5,9 +5,13 @@ import com.tvlyrics.app.provider.QQMusicApi
 import com.tvlyrics.app.provider.NeteaseApi
 import com.tvlyrics.app.provider.AppleMusicApi
 import com.tvlyrics.app.codec.QrcDecrypt
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 // 歌词聚合：获取所有可用歌词版本
-import android.util.Log
 
 // 带歌曲信息的歌词源
 data class LyricSource(
@@ -18,30 +22,35 @@ data class LyricSource(
 
 object LyricsAggregator {
     // 获取所有可用歌词版本（每个源的前N个结果）
-    fun fetchAll(track: Track, limitPerSource: Int = 3): List<LyricSource> {
-        val sources = mutableListOf<LyricSource>()
-        val keyword = buildString {
-            append(track.title)
-            track.artists.firstOrNull()?.let { append(" ").append(it) }
-        }
-
-        // 0. Apple Music（AMLL）- Spotify ID 精确匹配，优先级最高
-        try {
-            val record = AppleMusicApi.findBySpotifyId(AppleMusicApi.appContext, track.id)
-            if (record != null) {
-                Log.d("TVLyrics", "AMLL exact match: ${record.title}")
-                val lines = AppleMusicApi.getLyrics(record)
-                Log.d("TVLyrics", "AMLL lyric lines: ${lines.size}")
-                if (lines.isNotEmpty()) {
-                    sources.add(LyricSource(
-                        Track(record.id, record.title, record.artists, record.album, 0),
-                        "Apple Music", lines
-                    ))
-                }
+    // 三源并行 + 渐进回调：先完成的源先显示（不等最慢的 QQ 重试链）
+    suspend fun fetchAll(
+        track: Track,
+        limitPerSource: Int = 3,
+        onPartial: (List<LyricSource>) -> Unit = {},
+    ): List<LyricSource> = kotlinx.coroutines.coroutineScope {
+        val mutex = kotlinx.coroutines.sync.Mutex()
+        val collected = mutableListOf<LyricSource>()
+        suspend fun collect(result: List<LyricSource>) {
+            mutex.withLock {
+                collected.addAll(result)
+                // QQ 优先排序
+                val sorted = collected.sortedBy { it.source != "QQ音乐" }
+                onPartial(sorted)
             }
-        } catch (e: Exception) { Log.e("TVLyrics", "AMLL fail", e) }
+        }
+        val qq = async(Dispatchers.IO) { runCatching { fetchQQ(track, limitPerSource) }.getOrDefault(emptyList()) }
+        val ne = async(Dispatchers.IO) { runCatching { fetchNetease(track, limitPerSource) }.getOrDefault(emptyList()) }
+        val amll = async(Dispatchers.IO) { runCatching { fetchAMLL(track) }.getOrDefault(emptyList()) }
+        collect(ne.await())   // 网易云最快，先显示
+        collect(amll.await())
+        collect(qq.await())   // QQ 最慢（重试链），最后补充
+        return@coroutineScope collected.sortedBy { it.source != "QQ音乐" }
+    }
 
-        // 1. QQ 音乐 - 三级重试：关键词→纯歌名→延迟2.5秒再试（风控是瞬断，等一下就恢复）
+    // QQ 音乐：三级重试（关键词→纯歌名→延迟2.5s），候选间隔 400ms（keep-alive 后可缩短）
+    private fun fetchQQ(track: Track, limitPerSource: Int): List<LyricSource> {
+        val sources = mutableListOf<LyricSource>()
+        val keyword = "${track.title} ${track.artists.firstOrNull() ?: ""}".trim()
         try {
             var results = QQMusicApi.search(keyword)
             Log.d("TVLyrics", "QQ search results: ${results.size} for '$keyword'")
@@ -58,7 +67,7 @@ object LyricsAggregator {
             for (candidate in results) {
                 if (fetched >= limitPerSource) break
                 try {
-                    Thread.sleep(600) // 防止 -1901 反作弊拦截
+                    Thread.sleep(400)
                     val (raw, trans, roma) = QQMusicApi.getLyrics(candidate.id)
                     val lines = parseQQ(raw, trans, roma)
                     Log.d("TVLyrics", "QQ lyric ${candidate.title}: ${lines.size} lines")
@@ -71,8 +80,13 @@ object LyricsAggregator {
                 }
             }
         } catch (e: Exception) { Log.e("TVLyrics", "QQ search fail", e) }
+        return sources
+    }
 
-        // 2. 网易云 - "歌名 歌手"搜不到时降级用纯歌名再搜
+    // 网易云："歌名 歌手"搜不到时降级纯歌名
+    private fun fetchNetease(track: Track, limitPerSource: Int): List<LyricSource> {
+        val sources = mutableListOf<LyricSource>()
+        val keyword = "${track.title} ${track.artists.firstOrNull() ?: ""}".trim()
         try {
             var results = NeteaseApi.search(keyword)
             Log.d("TVLyrics", "Netease search results: ${results.size} for '$keyword'")
@@ -94,23 +108,38 @@ object LyricsAggregator {
                         Parsers.parseLrc(lrc).let { Parsers.mergeTranslation(it, trans) }
                     }
                     if (lines.isNotEmpty()) {
-                        sources.add(LyricSource(
-                            track = candidate,
-                            source = "网易云",
-                            lines = lines
-                        ))
+                        sources.add(LyricSource(candidate, "网易云", lines))
                     }
                 } catch (e: Exception) {
                     Log.e("TVLyrics", "Netease lyric fetch fail for ${candidate.id}", e)
                 }
             }
         } catch (e: Exception) { Log.e("TVLyrics", "Netease search fail", e) }
+        return sources
+    }
 
+    // Apple Music（AMLL）：Spotify ID 精确匹配
+    private fun fetchAMLL(track: Track): List<LyricSource> {
+        val sources = mutableListOf<LyricSource>()
+        try {
+            val record = AppleMusicApi.findBySpotifyId(AppleMusicApi.appContext, track.id)
+            if (record != null) {
+                Log.d("TVLyrics", "AMLL exact match: ${record.title}")
+                val lines = AppleMusicApi.getLyrics(record)
+                Log.d("TVLyrics", "AMLL lyric lines: ${lines.size}")
+                if (lines.isNotEmpty()) {
+                    sources.add(LyricSource(
+                        Track(record.id, record.title, record.artists, record.album, 0),
+                        "Apple Music", lines
+                    ))
+                }
+            }
+        } catch (e: Exception) { Log.e("TVLyrics", "AMLL fail", e) }
         return sources
     }
 
     // 保留原来的方法兼容
-    fun fetch(track: Track): Lyrics? {
+    suspend fun fetch(track: Track): Lyrics? {
         val sources = fetchAll(track, limitPerSource = 1)
         return sources.firstOrNull()?.let { Lyrics(it.lines, "${it.source} · ${it.track.title}") }
     }

@@ -17,9 +17,13 @@ object QQMusicApi {
     // 参考项目接口：返回 XML 含 content/contentts/contentroma（原文/翻译/罗马音）
     private const val LYRIC = "https://c.y.qq.com/qqmusic/fcgi-bin/lyric_download.fcg"
 
+    // 对齐稳定源的完整请求头（Chrome UA + c.y.qq.com Referer + netease cookie）
     private val headers = mapOf(
-        "Referer" to "https://y.qq.com/",
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Referer" to "https://c.y.qq.com/",
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/63.0.3239.132 Safari/537.36",
+        "Cookie" to "os=pc;osver=Microsoft-Windows-10-Professional-build-16299.125-64bit;appver=2.0.3.131777;channel=netease;__remember_me=true",
+        "Accept" to "*/*",
+        "Accept-Language" to "en-GB,en;q=0.9",
     )
 
     // 返回 Track 列表（id 为数字 musicid，用于歌词接口）
@@ -55,10 +59,15 @@ object QQMusicApi {
 
     // 返回 (原文, 翻译, 罗马音)，均可能为 QRC hex 或明文
     fun getLyrics(musicId: String): Triple<String, String?, String?> {
-        val url = "$LYRIC?version=15&miniversion=82&lrctype=4&musicid=$musicId"
-        val resp = Http.get(url, headers)
-        Log.d("TVLyricsQQ", "lyric resp len=${resp.body.length}")
-        val values = extractLyricValues(resp.body)
+        // POST form（对齐稳定源：参数在 body 不在 URL）
+        val resp = Http.postForm(LYRIC, mapOf(
+            "miniversion" to "82",
+            "version" to "15",
+            "lrctype" to "4",
+            "musicid" to musicId,
+        ), headers)
+        Log.d("TVLyricsQQ", "lyric resp len=${resp.length}")
+        val values = extractLyricValues(resp)
         val original = decodeContent(values["content"]) ?: return Triple("", null, null)
         val translation = values["contentts"]?.takeIf { it.isNotBlank() }?.let { decodeContent(it) }
         val romanization = values["contentroma"]?.takeIf { it.isNotBlank() }?.let { decodeContent(it) }
