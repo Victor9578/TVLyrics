@@ -266,6 +266,7 @@ private fun LyricsScreen(prefs: AppPrefs) {
     var isLiked by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
     var isRefreshingSources by remember { mutableStateOf(false) }
+    var sourcesFetchedFor by remember { mutableStateOf<String?>(null) }  // 全量列表已拉取的歌（每首一次）
 
     // 轮询循环
     LaunchedEffect(Unit) {
@@ -297,29 +298,17 @@ private fun LyricsScreen(prefs: AppPrefs) {
         pendingSource = null
         allSources = emptyList()
         status = "搜索歌词…"
-        // 渐进显示：先完成的源先上屏（网易云 ~0.5s，不等 QQ 重试链 ~3s）
-        val sources = LyricsAggregator.fetchAll(track) { partial ->
-            allSources = partial
-            val qqFirst = partial.firstOrNull { it.source == "QQ音乐" }
-            when {
-                // QQ 到货：自动接管（优先级最高，QRC 逐字质量最好）
-                qqFirst != null && selectedSource?.source != "QQ音乐" -> {
-                    selectedSource = qqFirst
-                    currentLyrics = Lyrics(qqFirst.lines, "${qqFirst.source} · ${qqFirst.track.title}")
-                    status = currentLyrics?.source ?: ""
-                }
-                // 网易云先到：暂存等 QQ（1.5s 后 QQ 没来再显示，避免闪烁）
-                selectedSource == null && partial.isNotEmpty() -> {
-                    pendingSource = partial.first()
-                }
-            }
+        // 快速路径（对齐参考App）：QQ 搜索+下载1条，失败→网易云1条。切歌 2-3 个请求秒显
+        val quick = LyricsAggregator.fetchQuick(track)
+        if (quick != null) {
+            selectedSource = quick
+            currentLyrics = Lyrics(quick.lines, "${quick.source} · ${quick.track.title}")
+            allSources = listOf(quick)
+            status = currentLyrics?.source ?: ""
+        } else {
+            allSources = emptyList()
+            status = "未找到歌词"
         }
-        allSources = sources
-        if (selectedSource == null && sources.isNotEmpty()) {
-            selectedSource = sources.first()
-            currentLyrics = selectedSource?.let { Lyrics(it.lines, "${it.source} · ${it.track.title}") }
-        }
-        if (currentLyrics == null) status = "未找到歌词"
 
         withIO {
             try {
@@ -468,6 +457,18 @@ private fun LyricsScreen(prefs: AppPrefs) {
         }
         }
         } // 主内容层结束（模糊 Box 在此关闭，面板在外）
+
+        // 打开设置页：拉全量版本列表（对齐参考App：切歌只下1条，开设置才下前几条）
+        LaunchedEffect(showMenu, playback.track?.id) {
+            if (!showMenu) return@LaunchedEffect
+            val track = playback.track ?: return@LaunchedEffect
+            if (sourcesFetchedFor == track.id) return@LaunchedEffect
+            sourcesFetchedFor = track.id
+            isRefreshingSources = true
+            val sources = LyricsAggregator.fetchAll(track)
+            allSources = sources
+            isRefreshingSources = false
+        }
 
         // 设置：单页面板（延迟滑块 + 搜索 + 歌词版本）
         RightPanel(visible = showMenu, onClose = { showMenu = false }) {
@@ -999,7 +1000,15 @@ private fun ColumnScope.SettingsContent(
     var isSearching by remember { mutableStateOf(false) }
     var searchResults by remember { mutableStateOf<List<SearchResultItem>>(emptyList()) }
 
-    Text("设置", color = WHITE, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Text("设置", color = WHITE, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        // 版本号（从 PackageManager 读取）
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        val versionName = remember {
+            try { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName } catch (_: Exception) { "?" }
+        }
+        Text("v$versionName", color = DIM, fontSize = 12.sp)
+    }
     Spacer(Modifier.height(16.dp))
 
     if (showSearch) {

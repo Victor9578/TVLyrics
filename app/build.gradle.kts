@@ -16,6 +16,13 @@ android {
         versionName = "0.3.0"
     }
 
+    // release 用 debug 签名：TV 上已装的 debug 版可直接覆盖升级（签名一致，数据保留）
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+
     buildFeatures { compose = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

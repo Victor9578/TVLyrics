@@ -17,18 +17,18 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # runner 自带 Android SDK，只补装缺的 platform（已装则跳过）
-      - name: Ensure Android platform 34
-        run: yes 2>/dev/null | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" >/dev/null || true
+      # runner 自带 Android SDK，补装 compileSdk 37.1（已装则跳过）
+      - name: Ensure Android platform 37.1
+        run: yes 2>/dev/null | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.1" "build-tools;34.0.0" >/dev/null || true
 
-      - name: Install Gradle
+      - name: Install Gradle 9.8.2
         run: |
-          curl -sL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o /tmp/gradle.zip
+          curl -sL https://services.gradle.org/distributions/gradle-9.8.2-bin.zip -o /tmp/gradle.zip
           unzip -q /tmp/gradle.zip -d "$HOME"
-          echo "$HOME/gradle-8.7/bin" >> "$GITHUB_PATH"
+          echo "$HOME/gradle-9.8.2/bin" >> "$GITHUB_PATH"
 
-      - name: Build debug APK
-        run: gradle assembleDebug --no-daemon
+      - name: Build release APK（debug 签名，可直接覆盖安装）
+        run: gradle assembleRelease --no-daemon
 
       - name: Run unit tests
         run: gradle testDebugUnitTest --no-daemon
@@ -36,5 +36,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: TVLyrics-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: TVLyrics-v0.3.0
+          path: app/build/outputs/apk/release/app-release.apk

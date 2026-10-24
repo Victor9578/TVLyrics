@@ -22,6 +22,53 @@ data class LyricSource(
 
 object LyricsAggregator {
     // 获取所有可用歌词版本（每个源的前N个结果）
+    // 快速路径（切歌时）：QQ 搜索+最佳匹配+下载1条；失败→网易云同款。总请求 2-3 个（对齐参考App逻辑）
+    suspend fun fetchQuick(track: Track): LyricSource? {
+        // 1. QQ：搜索 + 1 条歌词（无重试链，快速失败）
+        val qq = kotlinx.coroutines.withContext(Dispatchers.IO) { fetchQQQuick(track) }
+        if (qq != null) return qq
+        // 2. QQ 失败 → 网易云：搜索 + 1 条
+        return kotlinx.coroutines.withContext(Dispatchers.IO) { fetchNeteaseQuick(track) }
+    }
+
+    private fun fetchQQQuick(track: Track): LyricSource? {
+        val keyword = "${track.title} ${track.artists.firstOrNull() ?: ""}".trim()
+        return try {
+            var results = QQMusicApi.search(keyword)
+            if (results.isEmpty()) results = QQMusicApi.search(track.title)
+            val best = results.firstOrNull() ?: return null
+            val (raw, trans, roma) = QQMusicApi.getLyrics(best.id)
+            val lines = parseQQ(raw, trans, roma)
+            Log.d("TVLyrics", "QQ quick: ${best.title} ${lines.size} lines")
+            if (lines.isNotEmpty()) LyricSource(best, "QQ音乐", lines) else null
+        } catch (e: Exception) {
+            Log.e("TVLyrics", "QQ quick fail", e)
+            null
+        }
+    }
+
+    private fun fetchNeteaseQuick(track: Track): LyricSource? {
+        val keyword = "${track.title} ${track.artists.firstOrNull() ?: ""}".trim()
+        return try {
+            var results = NeteaseApi.search(keyword)
+            if (results.isEmpty()) results = NeteaseApi.search(track.title)
+            val best = results.firstOrNull() ?: return null
+            val (lrc, yrc, trans) = NeteaseApi.getLyrics(best.id)
+            val lines = if (!yrc.isNullOrBlank()) {
+                val parsed = Parsers.parseWordLyrics(yrc)
+                if (parsed.isEmpty()) Parsers.parseLrc(lrc).let { Parsers.mergeTranslation(it, trans) }
+                else Parsers.mergeTranslation(parsed, trans)
+            } else {
+                Parsers.parseLrc(lrc).let { Parsers.mergeTranslation(it, trans) }
+            }
+            Log.d("TVLyrics", "Netease quick: ${best.title} ${lines.size} lines")
+            if (lines.isNotEmpty()) LyricSource(best, "网易云", lines) else null
+        } catch (e: Exception) {
+            Log.e("TVLyrics", "Netease quick fail", e)
+            null
+        }
+    }
+
     // 三源并行 + 渐进回调：先完成的源先显示（不等最慢的 QQ 重试链）
     suspend fun fetchAll(
         track: Track,
